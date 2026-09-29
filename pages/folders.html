@@ -376,9 +376,24 @@ let allFolders = [];
 let hotFolders = [];
 let currentPath = new URLSearchParams(window.location.search).get('folder') || '';
 let visibleChildCounts = new Map();
+function migrateFolderCookie(name, validValues) {
+  const prefix = `${name}=`;
+  const entry = document.cookie.split(';').map(part => part.trim()).find(part => part.startsWith(prefix));
+  if (entry) {
+    const value = entry.slice(prefix.length);
+    if (validValues.includes(value)) localStorage.setItem(name, value);
+    document.cookie = `${name}=; Max-Age=0; Path=/folders; SameSite=Lax`;
+  }
+}
+migrateFolderCookie('pixvault-folder-mode', ['flat', 'tree']);
+migrateFolderCookie('pixvault-folder-sort', ['default', 'hot', 'newest', 'oldest', 'most', 'least', 'az', 'za']);
 let viewMode = (currentPath || localStorage.getItem('pixvault-folder-mode') === 'tree') ? 'tree' : 'flat';
 let hotRequestId = 0;
 document.getElementById('viewModeSelect').value = viewMode;
+const savedFolderSort = localStorage.getItem('pixvault-folder-sort');
+if (['default', 'hot', 'newest', 'oldest', 'most', 'least', 'az', 'za'].includes(savedFolderSort)) {
+  document.getElementById('folderSortSelect').value = savedFolderSort;
+}
 function folderUrl(path) {
   const url = new URL(window.location.href);
   if (path) url.searchParams.set('folder', path);
@@ -421,9 +436,9 @@ function sortFolders(folders, mode) {
   return f;
 }
 
-document.getElementById('folderSortSelect').addEventListener('change', async function() {
+async function applyFolderSort() {
   const requestId = ++hotRequestId;
-  if (this.value === 'hot') {
+  if (document.getElementById('folderSortSelect').value === 'hot') {
     try {
       const res = await fetch('/api/folders?include_parents=true&sort=hot');
       if (!res.ok) throw new Error('Could not load hot folders');
@@ -433,6 +448,10 @@ document.getElementById('folderSortSelect').addEventListener('change', async fun
     } catch (e) { console.error(e); hotFolders = []; }
   }
   refreshFolders();
+}
+document.getElementById('folderSortSelect').addEventListener('change', function() {
+  localStorage.setItem('pixvault-folder-sort', this.value);
+  applyFolderSort();
 });
 document.getElementById('viewModeSelect').addEventListener('change', function() {
   viewMode = this.value;
@@ -449,7 +468,8 @@ async function loadFolders() {
     if (!res.ok) throw new Error('Could not load folders');
     allFolders = await res.json();
     document.getElementById('skelWrap').remove();
-    refreshFolders();
+    if (document.getElementById('folderSortSelect').value === 'hot') await applyFolderSort();
+    else refreshFolders();
   } catch(e) {
     console.error(e);
     document.getElementById('folderGrid').innerHTML =

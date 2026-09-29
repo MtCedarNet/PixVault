@@ -54,6 +54,7 @@ PixVault denies gallery access until `auth.gallery_password` is set. The login p
 ### Folders (Page 2)
 - **Square thumbnail grid** — auto-fill columns with folder names and image counts
 - **Nested folders** — switch between all image folders and browsing one directory level at a time
+- **Remembered folder controls** — view and sort modes apply across all folders and are saved in browser local storage
 - **Search bar** — filter folders by name or tag
 - **Click folder** → opens scrollable image grid inside a modal
 - **Infinite scroll inside modal**
