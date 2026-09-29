@@ -122,105 +122,72 @@ footer {
 <h2>1) Setup & Installation</h2>
 <code>
 # Clone the repository
-https://github.com/ApeDevOne/PixVault
+git clone https://github.com/MtCedarNet/PixVault.git
+cd PixVault
 
 # Create virtual environment
 python -m venv venv
 
 # Activate (Windows)
-venv\Scripts\activate
+.\venv\Scripts\Activate.ps1
 
 # Install dependencies
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 
 # Create and edit the local configuration
 Copy-Item config.example.toml config.toml
 
 # Run server
-uvicorn main:app --host 0.0.0.0 --port 7979 --reload
+python -m uvicorn main:app --host 127.0.0.1 --port 7979
 </code>
 
 <p class="note">Server runs at:</p>
 <code class="inline">http://localhost:7979</code>
-<p class="note">For maintenance, open <code class="inline">http://localhost:7979/admin</code>. Enter <code class="inline">auth.admin_password</code> from <code class="inline">config.toml</code>, then use the buttons to rebuild the gallery, generate missing thumbnails, or update folder metadata. Regenerating folder display names overwrites manual edits.</p>
+<p class="note">Sign in through the browser, click <strong>Admin</strong> in the navigation bar, and enter <code class="inline">auth.admin_password</code> from <code class="inline">config.toml</code> to run maintenance actions.</p>
 </div>
 
 <div class="section">
 <h2>2) Authentication</h2>
 <p>Set <code class="inline">auth.gallery_password</code>, <code class="inline">auth.admin_password</code>, and <code class="inline">storage.images_dir</code> in <code class="inline">config.toml</code>. The file is ignored by Git.</p>
-<p class="note">Sign in at <code class="inline">/login</code> to view the gallery. Management endpoints also require the separate admin password. Enter it on the Admin page or pass it in the <code class="inline">X-Admin-Key</code> header for admin API requests.</p>
+<p class="note">Open PixVault in a browser and sign in with the gallery password. Use the separate admin password on the Admin page for maintenance.</p>
 </div>
 
 <div class="section">
 <h2>3) Thumbnail Generation</h2>
-<code>POST /api/admin/thumbnails/generate (X-Admin-Key header)</code>
-<code>GET /api/thumbnails/progress/view</code>
+<p>On the <strong>Admin</strong> page, click <strong>Generate missing thumbnails</strong>. The page shows progress, completed items, and failures. Run it again after adding images.</p>
 </div>
 
 <div class="section">
 <h2>📁 Folder Metadata</h2>
 <p>Folders may be nested at any depth under <code class="inline">storage.images_dir</code>. On the Folders page, switch between <strong>All folders</strong> and <strong>Browse folders</strong>; breadcrumbs, browser Back, and Esc return to parent directories. A parent with its own images has a View photos button.</p>
-<p class="note">Use paths relative to that image directory as keys in folders.json and tags.json, such as <code class="inline">Trips/2026</code>. Top-level keys work as before.</p>
-<p class="note">GET /api/folders returns image folders; add <code class="inline">?include_parents=true</code> to include parent directories for browsing.</p>
-<code>POST /api/admin/folders/generate (X-Admin-Key header)</code>
-<p class="note">Skips folders with only videos</p>
-<code>
-{
-  "status": "generated",
-  "folders": 1,
-  "file": "\\data\\folders.json"
-}
-</code>
-<p class="warning">⚠️ After editing, rebuild cache:</p>
-<code>POST /api/admin/cache/rebuild (X-Admin-Key header)</code>
+<p class="note">Use paths relative to that image directory as keys in <code class="inline">data/folders.json</code> and <code class="inline">data/tags.json</code>, such as <code class="inline">Trips/2026</code>.</p>
+<p>To create folder display names, click <strong>Admin</strong> and then <strong>Generate folder names</strong>. This overwrites manual edits in <code class="inline">data/folders.json</code>, so the page asks for confirmation. After editing names, click <strong>Rebuild gallery</strong>.</p>
 </div>
 
 <div class="section">
 <h2>🏷️ Tag Generation</h2>
-<code>POST /api/admin/tags/generate (X-Admin-Key header)</code>
-<code>
-{
-  "status": "updated",
-  "total_folders": 1,
-  "file": "\\data\\tags.json"
-}
-</code>
-<p class="warning">⚠️ Rebuild cache after editing</p>
+<p>On the <strong>Admin</strong> page, click <strong>Add missing tags</strong> to add new image folders to <code class="inline">data/tags.json</code>. Edit their tags in that file, then click <strong>Rebuild gallery</strong>.</p>
 </div>
 
 <div class="section">
 <h2>📊 Statistics</h2>
-<code>GET /api/stats</code>
+<p>The Gallery and Folders pages display image and visit counts in the browser.</p>
 </div>
 
 <div class="section">
 <h2>🌍 Visit Logging</h2>
-<code>GET /api/visitlog?key=YOUR_ADMIN_PASSWORD</code>
-<code>
-{
-  "countries": {"XX": 1},
-  "paths": {"/": 2},
-  "recent": [...]
-}
-</code>
-<p class="note">Uses Cloudflare headers:</p>
+<p class="note">When available, visit logging uses these Cloudflare headers:</p>
 <code class="inline">CF-IPCountry</code>
 <code class="inline">CF-Connecting-IP</code>
 </div>
 
 <div class="section">
-<h2>🛠️ Debug Headers</h2>
-<code>GET /api/debug/headers?key=YOUR_ADMIN_PASSWORD</code>
-</div>
-
-<div class="section">
 <h2>🔄 Cache Rebuild</h2>
-<p>Required after editing:</p>
+<p>After adding or removing images, or editing these files, click <strong>Admin</strong> and then <strong>Rebuild gallery</strong>:</p>
 <ul>
 <li>folders.json</li>
 <li>tags.json</li>
 </ul>
-<code>POST /api/admin/cache/rebuild (X-Admin-Key header)</code>
 </div>
 
 <div class="section">

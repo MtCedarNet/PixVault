@@ -1,15 +1,31 @@
 # PixVault — Local Media Gallery
 
-Dark-mode FastAPI gallery for your Images.  
-Three pages: **Gallery** (masonry grid, filters, infinite scroll), **Folders** (thumbnail grid), and **Admin** (maintenance controls).
+PixVault is a dark-mode FastAPI gallery for your images. It has three pages: **Gallery** (masonry grid, filters, infinite scroll), **Folders** (thumbnail grid), and **Admin** (maintenance controls).
 
-## Documentation
+## Install and run
 
-For full documentation, visit [Project Documentation](https://apedevone.github.io/PixVault/).
+Use Python 3.11 or newer. In PowerShell:
+
+```powershell
+git clone https://github.com/MtCedarNet/PixVault.git
+cd PixVault
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+Copy-Item config.example.toml config.toml
+```
+
+On macOS or Linux, activate the environment with `source venv/bin/activate` and copy the template with `cp config.example.toml config.toml`. Edit `config.toml` as described below, then start the server:
+
+```powershell
+python -m uvicorn main:app --host 127.0.0.1 --port 7979
+```
+
+Open `http://localhost:7979` in a browser. Sign in with the gallery password you set, then use **Gallery**, **Folders**, and **Admin** in the navigation bar. Stop the server with Ctrl+C.
 
 ## Configuration and gallery access
 
-Use Python 3.11 or newer. Copy `config.example.toml` to `config.toml` if the local file does not exist, then edit the values in that one file:
+Set your own values in `config.toml`:
 
 ```toml
 [auth]
@@ -21,7 +37,7 @@ session_secret = "choose-a-separate-long-random-secret"
 images_dir = 'D:\Photos'
 ```
 
-`images_dir` may also be relative to the project directory, such as `"Downloads"`. Windows paths can use single-quoted TOML strings as shown above. Restart the server after editing `config.toml`. The local file is ignored by Git; do not commit passwords. If `session_secret` is empty, sessions end when the server restarts. Set it to the same long random value on every worker to keep sessions valid across workers and restarts.
+`images_dir` points to the directory containing your image folders. It may also be relative to the project directory, such as `"Downloads"`. Windows paths can use single-quoted TOML strings as shown above. Restart the server after editing `config.toml`. The local file is ignored by Git; do not commit passwords. If `session_secret` is empty, sessions end when the server restarts. Set it to the same long random value on every worker to keep sessions valid across workers and restarts.
 
 PixVault denies gallery access until `auth.gallery_password` is set. The login protects the gallery, folders, admin page, APIs, full-size media, and thumbnails. Sessions expire after 12 hours; use **Logout** to end one sooner. Changing the gallery password invalidates existing sessions. Management actions require the separate `auth.admin_password`; leaving it empty disables them. Use HTTPS when exposing the gallery beyond your own computer.
 
@@ -44,34 +60,50 @@ PixVault denies gallery access until `auth.gallery_password` is set. The login p
 - **Lightbox** inside folder view, powered by [popupable](https://github.com/ewanhowell5195/popupable); browser Back closes it
 
 ### Admin (Page 3)
-- Open `/admin` or click **Admin** in the navigation bar.
-- Enter `auth.admin_password` from `config.toml` to run maintenance actions. The page does not save the password.
-- Rebuild the gallery cache, generate missing thumbnails with live progress, add missing tag entries, or regenerate folder display names.
-- Regenerating folder display names overwrites manual edits in `data/folders.json`; the page asks for confirmation first.
+
+After signing in through the browser, click **Admin** in the navigation bar and enter the separate `auth.admin_password` from `config.toml`. The page uses it for actions but does not save it.
+
+- Click **Rebuild gallery** after adding or removing images, or after editing folder names or tags. The page shows the last rebuild time and folder and image counts.
+- Click **Generate missing thumbnails** to create thumbnails for new images. Progress and failures appear on the page.
+- Click **Add missing tags** to add new image folders to `data/tags.json`. Edit the tags in that file, then click **Rebuild gallery**.
+- Click **Generate folder names** to create `data/folders.json`. This overwrites manually edited display names, so the page asks for confirmation. Edit the names if needed, then click **Rebuild gallery**.
 
 ## Directory Structure
 
 ```
 PixVault/
-├── main.py          # FastAPI app
-├── config.example.toml # Configuration template
-├── config.toml      # Local settings; ignored by Git
+├── main.py              # FastAPI app
+├── config.example.toml  # Public configuration template
+├── config.toml          # Local settings; ignored by Git
 ├── requirements.txt
-├── Downloads/        # Image library; folders can be nested to any depth
+├── Downloads/           # Example image library; folders can be nested
 │   └── Trips/
 │       └── 2026/
 │           └── photo.jpg
+├── data/                # Generated cache, tags, and folder names
 ├── pages/
-│   ├── gallery.html # Page 1
-│   ├── folders.html # Page 2
-│   ├── admin.html   # Page 3
-│   └── login.html   # Password entry
+│   ├── gallery.html     # Gallery
+│   ├── folders.html     # Folders
+│   ├── admin.html       # Admin
+│   └── login.html       # Password entry
 └── README.md
 ```
 
 The Folders page has **All folders** and **Browse folders** modes. All folders lists each directory with images of its own; Browse folders lets you open parent directories and use breadcrumbs, the browser Back button, or Esc to move back. If a parent also has images, use its **View photos** button to see those images. The Gallery includes images at every depth.
 
-Use paths relative to `storage.images_dir` as keys in `data/tags.json` and `data/folders.json`, for example `"Trips/2026"`. Top-level folder keys keep their existing format. After adding images or changing metadata, rebuild the cache and generate thumbnails for new images.
+Use paths relative to `storage.images_dir` as keys in `data/tags.json` and `data/folders.json`, for example `"Trips/2026"`. Top-level folder keys keep their existing format. In `data/tags.json`:
+
+```json
+{"Trips/2026": ["travel", "2026"]}
+```
+
+In `data/folders.json`:
+
+```json
+{"Trips/2026": "Summer trip"}
+```
+
+Images belong in subfolders of `images_dir`. After adding images or changing metadata, use **Admin** to rebuild the gallery and generate missing thumbnails.
 
 ## Supported Media Formats
 
