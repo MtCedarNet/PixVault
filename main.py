@@ -1,17 +1,22 @@
 import os
+import hashlib
+import hmac
+import html
 import re
 import json
 import time
 import random
+import secrets
 import uuid
 import threading
+import tomllib
 from pathlib import Path
 from typing import Optional
-from fastapi import FastAPI, Query, HTTPException, Request, Response, Cookie
+from urllib.parse import quote
+from fastapi import FastAPI, Query, HTTPException, Request, Response, Cookie, Header, Form
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
-import json5
 from datetime import datetime
 from PIL import Image
 
@@ -25,8 +30,38 @@ app.add_middleware(
 )
 
 # ── Configure ────────────────────────────────────────────────────────────────
-SECRET_KEY = "Your_Secret_Key"
-DOWNLOADS_DIR = Path(r"Downloads") #Path where images are stored. Multiple paths can be added with some changes.
+CONFIG_FILE = Path(__file__).resolve().parent / "config.toml"
+
+
+def load_config(path: Path = CONFIG_FILE) -> dict:
+    source = path if path.exists() else path.with_name("config.example.toml")
+    try:
+        with source.open("rb") as config_file:
+            config = tomllib.load(config_file)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise RuntimeError(f"Cannot read PixVault configuration: {source}") from exc
+
+    auth = config.get("auth", {})
+    storage = config.get("storage", {})
+    for name in ("gallery_password", "admin_password", "session_secret"):
+        if not isinstance(auth.get(name), str):
+            raise ValueError(f"{source}: auth.{name} must be a string")
+    images_dir = storage.get("images_dir")
+    if not isinstance(images_dir, str) or not images_dir.strip():
+        raise ValueError(f"{source}: storage.images_dir must be a non-empty path")
+    images_path = Path(images_dir).expanduser()
+    if not images_path.is_absolute():
+        images_path = source.parent / images_path
+    return {"auth": auth, "images_dir": images_path.resolve()}
+
+
+CONFIG = load_config()
+GALLERY_PASSWORD = CONFIG["auth"]["gallery_password"]
+ADMIN_PASSWORD = CONFIG["auth"]["admin_password"]
+_SESSION_SECRET = CONFIG["auth"]["session_secret"].encode() or secrets.token_bytes(32)
+_SESSION_LIFETIME = 12 * 60 * 60
+_SESSION_COOKIE = "gallery_session"
+DOWNLOADS_DIR = CONFIG["images_dir"]
 CACHE_FILE    = Path(__file__).parent / "data" / "cache.json" # Cache file with image path,fodler details and tags. Used while serving on front-end. Created at first star and can be regenerated anytime with generate api endpoint.
 TAGS_FILE     = Path(__file__).parent / "data" / "tags.json" # Tags - Used for filters. Can be also used with cache by doing some changes. by default tags are added to cache and behaviour can be changed.
 FOLDERS_FILE  = Path(__file__).parent / "data" / "folders.json"
@@ -36,7 +71,7 @@ HOTLOG_FILE = Path(__file__).parent / "data" / "hotlog.json"
 VISITLOG_FILE = Path(__file__).parent / "data" / "visitlog.json"
 THUMBNAILS_DIR = Path(__file__).parent / "thumbnails"
 THUMB_SIZE     = (400, 400)  # max width/height, keeps aspect ratio -  400x400 is more than enough for 1080p screens. 800x800 can be used for 1440p and above. seperate code can be added to use depending on resolution but not recommended as it increased backend load and caching.
-_thumb_progress = {"total": 0, "created": 0, "skipped": 0, "running": False, "done": False}
+_thumb_progress = {"total": 0, "created": 0, "skipped": 0, "failed": 0, "running": False, "done": False}
 _thumb_lock = threading.Lock()
 # ────────────────────────────────────────────────────────────────────────────
 
@@ -45,9 +80,102 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif"}
 # Create directory if it doesn't exist
 THUMBNAILS_DIR.mkdir(parents=True, exist_ok=True)
 
+class OptionalStaticFiles(StaticFiles):
+    async def check_config(self):
+        if self.directory is not None and not Path(self.directory).exists():
+            return
+        await super().check_config()
+
+
 app.mount("/thumbs", StaticFiles(directory=str(THUMBNAILS_DIR)), name="thumbs")
-app.mount("/media", StaticFiles(directory=str(DOWNLOADS_DIR)), name="media")
+app.mount("/media", OptionalStaticFiles(directory=str(DOWNLOADS_DIR), check_dir=False), name="media")
 PAGES_DIR = Path(__file__).parent / "pages"
+
+
+def _session_key() -> bytes:
+    return hmac.new(_SESSION_SECRET, GALLERY_PASSWORD.encode(), hashlib.sha256).digest()
+
+
+def _valid_session(token: str | None) -> bool:
+    if not token:
+        return False
+    try:
+        issued, signature = token.split(".", 1)
+        age = int(time.time()) - int(issued)
+        if age < 0 or age > _SESSION_LIFETIME:
+            return False
+        expected = hmac.new(_session_key(), issued.encode(), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(signature, expected)
+    except (ValueError, TypeError):
+        return False
+
+
+def _safe_next(value: str | None) -> str:
+    if not value or not value.startswith("/") or value.startswith("//"):
+        return "/"
+    if "\\" in value or any(ord(char) < 32 for char in value):
+        return "/"
+    return value
+
+
+def _login_page(next_path: str = "/", error: bool = False) -> HTMLResponse:
+    page = (PAGES_DIR / "login.html").read_text(encoding="utf-8")
+    page = page.replace("{{NEXT}}", html.escape(_safe_next(next_path), quote=True))
+    page = page.replace("{{ERROR}}", "パスワードが違います。" if error else "")
+    response = HTMLResponse(page, status_code=401 if error else 200)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.middleware("http")
+async def require_gallery_login(request: Request, call_next):
+    if request.url.path in ("/login", "/logout"):
+        return await call_next(request)
+    if not GALLERY_PASSWORD:
+        return PlainTextResponse("auth.gallery_password is not configured in config.toml", status_code=503)
+    if not _valid_session(request.cookies.get(_SESSION_COOKIE)):
+        if request.method == "GET" and request.url.path in ("/", "/folders", "/admin"):
+            target = request.url.path
+            if request.url.query:
+                target += "?" + request.url.query
+            return RedirectResponse("/login?next=" + quote(_safe_next(target), safe=""), status_code=303)
+        return JSONResponse({"detail": "Authentication required"}, status_code=401)
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def page_login(next: str = "/"):
+    return _login_page(next)
+
+
+@app.post("/login")
+async def login(request: Request, password: str = Form(...), next: str = Form("/")):
+    if not GALLERY_PASSWORD:
+        return PlainTextResponse("auth.gallery_password is not configured in config.toml", status_code=503)
+    supplied = hashlib.sha256(password.encode()).digest()
+    expected = hashlib.sha256(GALLERY_PASSWORD.encode()).digest()
+    if not hmac.compare_digest(supplied, expected):
+        return _login_page(next, error=True)
+    issued = str(int(time.time()))
+    signature = hmac.new(_session_key(), issued.encode(), hashlib.sha256).hexdigest()
+    response = RedirectResponse(_safe_next(next), status_code=303)
+    response.set_cookie(
+        _SESSION_COOKIE, f"{issued}.{signature}", max_age=_SESSION_LIFETIME,
+        httponly=True, samesite="lax", secure=request.url.scheme == "https"
+        or request.headers.get("x-forwarded-proto") == "https", path="/",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.post("/logout")
+async def logout():
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(_SESSION_COOKIE, path="/")
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 @app.get("/", response_class=HTMLResponse)
 async def page_gallery(request: Request, response: Response, sid: str = Cookie(default=None)):
@@ -57,12 +185,16 @@ async def page_gallery(request: Request, response: Response, sid: str = Cookie(d
 async def page_folders(request: Request, response: Response, sid: str = Cookie(default=None)):
     return serve_page("folders.html", request, response, sid)
 
+@app.get("/admin", response_class=HTMLResponse)
+async def page_admin():
+    return HTMLResponse((PAGES_DIR / "admin.html").read_text(encoding="utf-8"))
+
 # Path to the folder containing images
 current_folder = Path(__file__).parent
 images_folder = current_folder / "site_images"
 
 # Mount the images folder at /images URL
-app.mount("/images", StaticFiles(directory=images_folder), name="images")
+app.mount("/images", OptionalStaticFiles(directory=images_folder, check_dir=False), name="images")
 
 
 # ── Load helpers ──────────────────────────────────────────────────────────────
@@ -257,28 +389,40 @@ _cache: dict = {}
 _cache_lock = threading.Lock()
 
 
+def _image_folders():
+    """Yield directories and their immediate images, at any depth below Downloads."""
+    if not DOWNLOADS_DIR.exists():
+        return
+    for root, dirnames, filenames in os.walk(DOWNLOADS_DIR):
+        folder = Path(root)
+        dirnames[:] = sorted(name for name in dirnames if not (folder / name).is_symlink())
+        images = [folder / name for name in sorted(filenames)
+                  if (folder / name).suffix.lower() in IMAGE_EXTS]
+        if folder != DOWNLOADS_DIR and images:
+            yield folder, images
+
+
+def _url_for(prefix: str, relative_path: Path) -> str:
+    return f"/{prefix}/{quote(relative_path.as_posix(), safe='/')}"
+
+
 def _build_cache() -> dict:
     tag_map      = load_tags()
     display_map  = load_display_names()
 
     folders: dict = {}
+    directories: dict = {}
     tag_index: dict = {}
     all_images: list = []
 
-    for folder in sorted(DOWNLOADS_DIR.iterdir()):
-        if not folder.is_dir():
-            continue
-        images = sorted(f for f in folder.iterdir() if f.suffix.lower() in IMAGE_EXTS)
-        if not images:
-            continue
-
-        fname        = folder.name
-        display_name = display_map.get(fname, fname)   # fallback to actual name
+    for folder, images in _image_folders():
+        fname        = folder.relative_to(DOWNLOADS_DIR).as_posix()
+        display_name = display_map.get(fname, folder.name)
         tags         = tag_map.get(fname, ["misc"])
-        urls         = [f"/media/{f.relative_to(DOWNLOADS_DIR).as_posix()}" for f in images]
+        urls         = [_url_for("media", f.relative_to(DOWNLOADS_DIR)) for f in images]
         mtimes = [f.stat().st_mtime for f in images]
         name_date = extract_date_from_name(fname)
-        first_thumb = "/thumbs/" + images[0].relative_to(DOWNLOADS_DIR).with_suffix(".jpg").as_posix()
+        first_thumb = _url_for("thumbs", images[0].relative_to(DOWNLOADS_DIR).with_suffix(".jpg"))
         folders[fname] = {
             "display_name":   display_name,
             "tags":           tags,
@@ -295,7 +439,7 @@ def _build_cache() -> dict:
             tag_index.setdefault(tag, []).append(fname)
 
         for img_path, url in zip(images, urls):
-            thumb_url = "/thumbs/" + img_path.relative_to(DOWNLOADS_DIR).with_suffix(".jpg").as_posix()
+            thumb_url = _url_for("thumbs", img_path.relative_to(DOWNLOADS_DIR).with_suffix(".jpg"))
             all_images.append({
                 "url":           url,
                 "thumb_url":     thumb_url,
@@ -305,9 +449,45 @@ def _build_cache() -> dict:
                 "has_name_date": name_date is not None,
             })
 
+        # Include ancestors even when they have no images of their own.
+        for ancestor in (folder, *folder.parents):
+            if ancestor == DOWNLOADS_DIR:
+                break
+            path = ancestor.relative_to(DOWNLOADS_DIR).as_posix()
+            parent = ancestor.parent.relative_to(DOWNLOADS_DIR).as_posix()
+            if parent == ".":
+                parent = ""
+            node = directories.setdefault(path, {
+                "name": path,
+                "basename": ancestor.name,
+                "parent": parent,
+                "display_name": display_map.get(path, ancestor.name),
+                "count": 0,
+                "total_count": 0,
+                "child_count": 0,
+                "thumbnail": first_thumb,
+                "tags": set(),
+                "mtime_latest": 0,
+                "mtime_earliest": 0,
+            })
+            node["total_count"] += len(images)
+            node["tags"].update(tags)
+            node["mtime_latest"] = max(node["mtime_latest"], name_date or max(mtimes))
+            earliest = name_date or min(mtimes)
+            node["mtime_earliest"] = min(node["mtime_earliest"] or earliest, earliest)
+            if path == fname:
+                node["count"] = len(images)
+                node["thumbnail"] = first_thumb
+
+    for node in directories.values():
+        if node["parent"]:
+            directories[node["parent"]]["child_count"] += 1
+        node["tags"] = sorted(node["tags"])
+
     return {
         "built_at":   time.time(),
         "folders":    folders,
+        "directories": directories,
         "tag_index":  tag_index,
         "all_images": all_images,
     }
@@ -335,9 +515,38 @@ def get_cache() -> dict:
 
 # ── Management endpoints ──────────────────────────────────────────────────────
 
+def _require_admin_key(key: str | None):
+    if not ADMIN_PASSWORD or not isinstance(key, str) or not hmac.compare_digest(key.encode(), ADMIN_PASSWORD.encode()):
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+
+
+@app.post("/api/admin/cache/rebuild")
+def admin_rebuild_cache(x_admin_key: str | None = Header(default=None)):
+    _require_admin_key(x_admin_key)
+    return rebuild_cache(x_admin_key)
+
+
+@app.post("/api/admin/tags/generate")
+def admin_generate_tags(x_admin_key: str | None = Header(default=None)):
+    _require_admin_key(x_admin_key)
+    return generate_tags_file(x_admin_key)
+
+
+@app.post("/api/admin/folders/generate")
+def admin_generate_folders(x_admin_key: str | None = Header(default=None)):
+    _require_admin_key(x_admin_key)
+    return generate_folders_file(x_admin_key)
+
+
+@app.post("/api/admin/thumbnails/generate")
+def admin_generate_thumbnails(x_admin_key: str | None = Header(default=None)):
+    _require_admin_key(x_admin_key)
+    return generate_thumbnails(x_admin_key)
+
 @app.post("/api/cache/rebuild")
-def rebuild_cache():
+def rebuild_cache(x_admin_key: str | None = Header(default=None)):
     """Rebuild cache after editing tags.json or folders.json."""
+    _require_admin_key(x_admin_key)
     global _cache
     data = _build_cache()
     with _cache_lock:
@@ -365,8 +574,7 @@ def cache_status():
 
 @app.get("/api/tags/generate")
 def generate_tags_file(key: str):
-    if key != SECRET_KEY:
-        raise HTTPException(status_code=403, detail="Unauthorized")
+    _require_admin_key(key)
 
     # Load existing tags if file exists
     if TAGS_FILE.exists():
@@ -376,13 +584,11 @@ def generate_tags_file(key: str):
         result = {}
 
     new_folders = 0
-    for folder in sorted(DOWNLOADS_DIR.iterdir()):
-        if not folder.is_dir():
-            continue
-        if any(f.suffix.lower() in IMAGE_EXTS for f in folder.iterdir()):
-            if folder.name not in result:
-                result[folder.name] = ["misc"]
-                new_folders += 1
+    for folder, _ in _image_folders():
+        path = folder.relative_to(DOWNLOADS_DIR).as_posix()
+        if path not in result:
+            result[path] = ["misc"]
+            new_folders += 1
 
     TAGS_FILE.write_text(
         json.dumps(result, ensure_ascii=False, indent=2),
@@ -404,14 +610,8 @@ def generate_folders_file(key: str):
     Generate folders.json with every folder display name defaulting to the actual folder name.
     Only call once on first setup — overwrites manual edits!
     """
-    if key != SECRET_KEY:
-        raise HTTPException(status_code=403, detail="Unauthorized")
-    result = {}
-    for folder in sorted(DOWNLOADS_DIR.iterdir()):
-        if not folder.is_dir():
-            continue
-        if any(f.suffix.lower() in IMAGE_EXTS for f in folder.iterdir()):
-            result[folder.name] = folder.name   # default: show actual name
+    _require_admin_key(key)
+    result = {path: info["basename"] for path, info in _build_cache()["directories"].items()}
     FOLDERS_FILE.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     return {
         "status":  "generated",
@@ -496,29 +696,40 @@ def get_images(
     }
 
 @app.get("/api/folders")
-def get_folders(sort: Optional[str] = Query(None)):
+def get_folders(sort: Optional[str] = Query(None), include_parents: bool = Query(False)):
     c = get_cache()
-    folders = [
-        {
-            "name":           name,
-            "display_name":   info["display_name"],
-            "count":          info["count"],
-            "thumbnail":      info["thumbnail"],
-            "tags":           info["tags"],
-            "mtime_latest":   info.get("mtime_latest", 0),
-            "mtime_earliest": info.get("mtime_earliest", 0),
-        }
-        for name, info in c["folders"].items()
-    ]
+    if include_parents:
+        folders = [dict(info) for info in c["directories"].values()]
+    else:
+        folders = [
+            {
+                "name": name,
+                "display_name": info["display_name"],
+                "count": info["count"],
+                "thumbnail": info["thumbnail"],
+                "tags": info["tags"],
+                "mtime_latest": info["mtime_latest"],
+                "mtime_earliest": info["mtime_earliest"],
+            }
+            for name, info in c["folders"].items()
+        ]
     if sort == "hot":
         with _hotlog_lock:
             hotdata = _load_hotlog()
         scores = hotdata.get("folders", {})
-        folders = [f for f in folders if f["name"] in scores]
-        folders.sort(key=lambda x: scores.get(x["name"], 0), reverse=True)
+        ranking = scores
+        if include_parents:
+            ranking = {}
+            for name, score in scores.items():
+                path = name
+                while path:
+                    ranking[path] = ranking.get(path, 0) + score
+                    path = path.rsplit("/", 1)[0] if "/" in path else ""
+        folders = [f for f in folders if ranking.get(f["name"], 0)]
+        folders.sort(key=lambda x: ranking[x["name"]], reverse=True)
     return folders
 
-@app.get("/api/folder/{folder_name}")
+@app.get("/api/folder/{folder_name:path}")
 def get_folder_images(
     folder_name: str,
     page: int = Query(1, ge=1),
@@ -551,8 +762,9 @@ def get_stats():
     }
 
 @app.get("/api/cache/generate")
-def generate_cache():
+def generate_cache(key: str):
     """Rescan all folders and rebuild cache.json. Call after adding new images."""
+    _require_admin_key(key)
     global _cache
     data = _build_cache()
     with _cache_lock:
@@ -590,35 +802,22 @@ def generate_thumbnails(key: str):
     Generate thumbnails for all images that don't have one yet.
     Safe to call multiple times — skips existing thumbnails.
     """
-    if key != SECRET_KEY:
-        raise HTTPException(status_code=403, detail="Unauthorized")
+    _require_admin_key(key)
 
     global _thumb_progress
-    if _thumb_progress["running"]:
-        return {"status": "already_running", "progress": _thumb_progress}
-
-    # count total first
-    total = sum(
-        1 for folder in DOWNLOADS_DIR.iterdir()
-        if folder.is_dir()
-        for f in folder.iterdir()
-        if f.suffix.lower() in IMAGE_EXTS
-    )
-
     with _thumb_lock:
-        _thumb_progress = {"total": total, "created": 0, "skipped": 0, "running": True, "done": False, "current": ""}
+        if _thumb_progress["running"]:
+            return {"status": "already_running", "progress": dict(_thumb_progress)}
+        total = sum(len(images) for _, images in _image_folders())
+        _thumb_progress = {"total": total, "created": 0, "skipped": 0, "failed": 0, "running": True, "done": False, "current": ""}
 
     def run():
         global _thumb_progress
         THUMBNAILS_DIR.mkdir(exist_ok=True)
 
         tasks = []
-        for folder in sorted(DOWNLOADS_DIR.iterdir()):
-            if not folder.is_dir():
-                continue
-            for img_path in sorted(folder.iterdir()):
-                if img_path.suffix.lower() not in IMAGE_EXTS:
-                    continue
+        for folder, images in _image_folders():
+            for img_path in images:
                 rel        = img_path.relative_to(DOWNLOADS_DIR)
                 thumb_path = THUMBNAILS_DIR / rel.with_suffix(".jpg")
                 tasks.append((img_path, thumb_path, THUMB_SIZE))
@@ -637,6 +836,8 @@ def generate_thumbnails(key: str):
                         _thumb_progress["created"] += 1
                     elif result == "skipped":
                         _thumb_progress["skipped"] += 1
+                    else:
+                        _thumb_progress["failed"] += 1
 
         with _thumb_lock:
             _thumb_progress["running"] = False
@@ -651,7 +852,8 @@ def generate_thumbnails(key: str):
 def thumbnail_progress():
     with _thumb_lock:
         p = dict(_thumb_progress)
-    p["percent"] = round((p["created"] + p["skipped"]) / max(p["total"], 1) * 100, 1)
+    processed = p["created"] + p["skipped"] + p.get("failed", 0)
+    p["percent"] = round(processed / p["total"] * 100, 1) if p["total"] else (100.0 if p["done"] else 0.0)
     return p
 
 
@@ -741,8 +943,7 @@ def hot_stats():
 
 @app.get("/api/visitlog")
 def get_visitlog(key: str = ""):
-    if key != SECRET_KEY:
-        raise HTTPException(status_code=403, detail="Unauthorized")
+    _require_admin_key(key)
     with _visitlog_lock:
         data = _load_visitlog()
     # sort countries by count
@@ -762,7 +963,8 @@ def get_visitlog(key: str = ""):
         "recent":    recent,
     }
 @app.get("/api/debug/headers")
-def debug_headers(request: Request):
+def debug_headers(request: Request, key: str):
+    _require_admin_key(key)
     return {
         "CF-IPCountry":    request.headers.get("CF-IPCountry", "NOT PRESENT"),
         "CF-Connecting-IP": request.headers.get("CF-Connecting-IP", "NOT PRESENT"),

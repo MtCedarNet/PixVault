@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>管理 | PixVault</title>
+<style>
+  :root { color-scheme: dark; --bg:#0a0a0f; --surface:#14141e; --border:#292938; --text:#e2e2ef; --muted:#9999ac; --accent:#9b8cff; --error:#ff9a9a; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.6 system-ui, sans-serif; }
+  nav { display:flex; align-items:center; gap:1.25rem; flex-wrap:wrap; padding:.8rem max(1rem, calc((100vw - 980px)/2)); border-bottom:1px solid var(--border); background:var(--surface); }
+  nav strong { color:var(--accent); font-size:1.15rem; margin-right:auto; }
+  nav a { color:var(--muted); text-decoration:none; }
+  nav a:hover, nav a[aria-current] { color:var(--accent); }
+  nav form { margin:0; }
+  nav .logout-button { padding:0; border:0; background:none; color:var(--muted); font:inherit; font-weight:400; }
+  nav .logout-button:hover { background:none; color:var(--accent); }
+  main { max-width:980px; margin:auto; padding:2rem 1rem 4rem; }
+  h1 { margin:0 0 .3rem; font-size:1.7rem; }
+  h2 { margin:0 0 .65rem; font-size:1.1rem; }
+  p { margin:.3rem 0 1rem; color:var(--muted); }
+  .grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:1rem; }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:1.25rem; }
+  .full { grid-column:1/-1; }
+  label { display:block; margin-bottom:.4rem; }
+  input { width:min(100%, 360px); padding:.65rem .8rem; border:1px solid var(--border); border-radius:8px; background:var(--bg); color:var(--text); font:inherit; }
+  input:focus { outline:2px solid var(--accent); outline-offset:2px; }
+  button { background:#6e5cdb; color:white; border:0; border-radius:8px; padding:.65rem .9rem; font:inherit; font-weight:600; cursor:pointer; }
+  button:hover:not(:disabled) { background:#8372f0; }
+  button:disabled { opacity:.55; cursor:wait; }
+  button.secondary { background:#29293d; }
+  button.secondary:hover:not(:disabled) { background:#383852; }
+  .metrics { display:flex; flex-wrap:wrap; gap:1.5rem; margin:1rem 0; }
+  .metrics strong { display:block; font-size:1.25rem; color:var(--text); }
+  .metrics span, .small { color:var(--muted); font-size:.85rem; }
+  .actions { display:flex; flex-wrap:wrap; gap:.65rem; align-items:center; }
+  .bar { height:12px; border-radius:99px; background:var(--border); overflow:hidden; margin:1rem 0 .45rem; }
+  .bar > div { height:100%; width:0; background:var(--accent); transition:width .25s; }
+  #message { min-height:1.5rem; margin:1rem 0 0; color:var(--accent); white-space:pre-wrap; }
+  #message.error { color:var(--error); }
+  @media (max-width:650px) { .grid { grid-template-columns:1fr; } nav strong { width:100%; } }
+</style>
+</head>
+<body>
+<nav aria-label="メインナビゲーション">
+  <strong>PixVault</strong>
+  <a href="/">Gallery</a>
+  <a href="/folders">Folders</a>
+  <a href="/admin" aria-current="page">Admin</a>
+  <form method="post" action="/logout"><button class="logout-button" type="submit">Logout</button></form>
+</nav>
+<main>
+  <h1>管理</h1>
+  <p>画像を追加した後や、タグ・表示名を変更した後に更新してください。</p>
+  <div class="grid">
+    <section class="card full">
+      <h2>管理キー</h2>
+      <label for="adminKey">config.toml の auth.admin_password</label>
+      <input id="adminKey" type="password" autocomplete="off" spellcheck="false" placeholder="管理キーを入力">
+      <p class="small">操作時だけ使用します。このページには保存されません。</p>
+    </section>
+    <section class="card">
+      <h2>ギャラリーのキャッシュ</h2>
+      <div class="metrics">
+        <div><strong id="folderCount">—</strong><span>フォルダー</span></div>
+        <div><strong id="imageCount">—</strong><span>画像</span></div>
+      </div>
+      <p class="small" id="builtAt">更新日時を取得中…</p>
+      <button id="rebuildButton" type="button">ギャラリーを再構築</button>
+    </section>
+    <section class="card">
+      <h2>サムネイル</h2>
+      <p id="thumbStatus">状態を取得中…</p>
+      <button id="thumbButton" type="button">不足分を生成</button>
+      <div class="bar" role="progressbar" aria-label="サムネイル生成の進捗" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progressBar"><div id="progressFill"></div></div>
+      <p class="small" id="thumbProgress" aria-live="polite">実行待ち</p>
+    </section>
+    <section class="card full">
+      <h2>フォルダー情報ファイル</h2>
+      <p>タグの生成は未登録フォルダーを追加します。表示名の生成は folders.json の手動編集を上書きします。</p>
+      <div class="actions">
+        <button id="tagsButton" class="secondary" type="button">不足するタグを追加</button>
+        <button id="foldersButton" class="secondary" type="button">表示名ファイルを生成</button>
+      </div>
+      <p class="small">ファイルを編集した後は「ギャラリーを再構築」を押してください。</p>
+    </section>
+  </div>
+  <p id="message" role="status" aria-live="polite"></p>
+</main>
+<script>
+const keyInput = document.getElementById('adminKey');
+const message = document.getElementById('message');
+const buttons = ['rebuildButton', 'thumbButton', 'tagsButton', 'foldersButton'].map(id => document.getElementById(id));
+let busy = false;
+let thumbsRunning = false;
+let wasDone = false;
+
+function setMessage(value, error = false) {
+  message.textContent = value;
+  message.classList.toggle('error', error);
+}
+
+function updateButtons() {
+  buttons.forEach(button => button.disabled = busy || (button.id === 'thumbButton' && thumbsRunning));
+}
+
+async function readJson(url, options) {
+  const response = await fetch(url, { cache: 'no-store', ...options });
+  const data = await response.json();
+  if (!response.ok) throw new Error(response.status === 403 ? '管理キーが正しくありません。' : (data.detail || `HTTP ${response.status}`));
+  return data;
+}
+
+async function refreshStatus() {
+  try {
+    const [cache, thumbs] = await Promise.all([
+      readJson('/api/cache/status'),
+      readJson('/api/thumbnails/status')
+    ]);
+    document.getElementById('folderCount').textContent = cache.folders.toLocaleString();
+    document.getElementById('imageCount').textContent = cache.images.toLocaleString();
+    document.getElementById('builtAt').textContent = cache.built_at
+      ? `最終再構築: ${new Date(cache.built_at * 1000).toLocaleString()}` : '未構築';
+    document.getElementById('thumbStatus').textContent = `${thumbs.thumbs.toLocaleString()} / ${thumbs.total.toLocaleString()} 件のサムネイル`;
+  } catch (error) {
+    setMessage(`状態を取得できません: ${error.message}`, true);
+  }
+}
+
+async function refreshProgress() {
+  try {
+    const progress = await readJson('/api/thumbnails/progress');
+    thumbsRunning = progress.running;
+    updateButtons();
+    const processed = progress.created + progress.skipped + (progress.failed || 0);
+    const percent = Math.min(100, progress.percent);
+    document.getElementById('progressFill').style.width = `${percent}%`;
+    document.getElementById('progressBar').setAttribute('aria-valuenow', percent);
+    document.getElementById('thumbProgress').textContent = progress.running || progress.done
+      ? `${progress.done ? '完了' : '生成中'}: ${processed.toLocaleString()} / ${progress.total.toLocaleString()} 件（新規 ${progress.created.toLocaleString()}、既存 ${progress.skipped.toLocaleString()}、失敗 ${(progress.failed || 0).toLocaleString()}）${progress.running && progress.current ? ` · ${progress.current}` : ''}`
+      : '実行待ち';
+    if (progress.done && !wasDone) await refreshStatus();
+    wasDone = progress.done;
+  } catch (error) {
+    setMessage(`進捗を取得できません: ${error.message}`, true);
+  }
+}
+
+async function runAction(path, success) {
+  const key = keyInput.value;
+  if (!key) { keyInput.focus(); setMessage('管理キーを入力してください。', true); return; }
+  busy = true;
+  updateButtons();
+  setMessage('処理中…');
+  try {
+    const result = await readJson(path, { method:'POST', headers:{ 'X-Admin-Key': key } });
+    setMessage(success(result));
+    await Promise.all([refreshStatus(), refreshProgress()]);
+  } catch (error) {
+    setMessage(`操作に失敗しました: ${error.message}`, true);
+  } finally {
+    busy = false;
+    updateButtons();
+  }
+}
+
+document.getElementById('rebuildButton').onclick = () => runAction('/api/admin/cache/rebuild', result =>
+  `ギャラリーを再構築しました（${result.folders} フォルダー、${result.images} 画像）。`);
+document.getElementById('thumbButton').onclick = () => runAction('/api/admin/thumbnails/generate', result =>
+  result.status === 'already_running' ? 'サムネイル生成はすでに実行中です。' : `サムネイル生成を開始しました（対象 ${result.total} 件）。`);
+document.getElementById('tagsButton').onclick = () => runAction('/api/admin/tags/generate', result =>
+  `タグを更新しました（新規 ${result.new_folders_added} フォルダー）。反映するにはギャラリーを再構築してください。`);
+document.getElementById('foldersButton').onclick = () => {
+  if (confirm('folders.json の手動編集を上書きします。続行しますか？')) {
+    runAction('/api/admin/folders/generate', result =>
+      `表示名ファイルを生成しました（${result.folders} フォルダー）。反映するにはギャラリーを再構築してください。`);
+  }
+};
+
+refreshStatus();
+refreshProgress();
+setInterval(() => { if (thumbsRunning) refreshProgress(); }, 2000);
+setInterval(() => { if (!thumbsRunning) refreshProgress(); }, 10000);
+</script>
+</body>
+</html>

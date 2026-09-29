@@ -133,30 +133,36 @@ venv\Scripts\activate
 # Install dependencies
 pip install -r requirements.txt
 
+# Create and edit the local configuration
+Copy-Item config.example.toml config.toml
+
 # Run server
 uvicorn main:app --host 0.0.0.0 --port 7979 --reload
 </code>
 
 <p class="note">Server runs at:</p>
 <code class="inline">http://localhost:7979</code>
+<p class="note">For maintenance, open <code class="inline">http://localhost:7979/admin</code>. Enter <code class="inline">auth.admin_password</code> from <code class="inline">config.toml</code>, then use the buttons to rebuild the gallery, generate missing thumbnails, or update folder metadata. Regenerating folder display names overwrites manual edits.</p>
 </div>
 
 <div class="section">
 <h2>2) Authentication</h2>
-<p>Most endpoints require:</p>
-<code>?key=Your_Secret_Key</code>
-<p class="note">Change key inside <code class="inline">main.py</code></p>
+<p>Set <code class="inline">auth.gallery_password</code>, <code class="inline">auth.admin_password</code>, and <code class="inline">storage.images_dir</code> in <code class="inline">config.toml</code>. The file is ignored by Git.</p>
+<p class="note">Sign in at <code class="inline">/login</code> to view the gallery. Management endpoints also require the separate admin password. Enter it on the Admin page or pass it in the <code class="inline">X-Admin-Key</code> header for admin API requests.</p>
 </div>
 
 <div class="section">
 <h2>3) Thumbnail Generation</h2>
-<code>GET /api/thumbnails/generate?key=Your_Secret_Key</code>
+<code>POST /api/admin/thumbnails/generate (X-Admin-Key header)</code>
 <code>GET /api/thumbnails/progress/view</code>
 </div>
 
 <div class="section">
 <h2>📁 Folder Metadata</h2>
-<code>GET /api/folders/generate?key=Your_Secret_Key</code>
+<p>Folders may be nested at any depth under <code class="inline">storage.images_dir</code>. On the Folders page, switch between <strong>All folders</strong> and <strong>Browse folders</strong>; breadcrumbs, browser Back, and Esc return to parent directories. A parent with its own images has a View photos button.</p>
+<p class="note">Use paths relative to that image directory as keys in folders.json and tags.json, such as <code class="inline">Trips/2026</code>. Top-level keys work as before.</p>
+<p class="note">GET /api/folders returns image folders; add <code class="inline">?include_parents=true</code> to include parent directories for browsing.</p>
+<code>POST /api/admin/folders/generate (X-Admin-Key header)</code>
 <p class="note">Skips folders with only videos</p>
 <code>
 {
@@ -166,12 +172,12 @@ uvicorn main:app --host 0.0.0.0 --port 7979 --reload
 }
 </code>
 <p class="warning">⚠️ After editing, rebuild cache:</p>
-<code>POST /api/cache/rebuild?key=Your_Secret_Key</code>
+<code>POST /api/admin/cache/rebuild (X-Admin-Key header)</code>
 </div>
 
 <div class="section">
 <h2>🏷️ Tag Generation</h2>
-<code>GET /api/tags/generate?key=Your_Secret_Key</code>
+<code>POST /api/admin/tags/generate (X-Admin-Key header)</code>
 <code>
 {
   "status": "updated",
@@ -189,7 +195,7 @@ uvicorn main:app --host 0.0.0.0 --port 7979 --reload
 
 <div class="section">
 <h2>🌍 Visit Logging</h2>
-<code>GET /api/visitlog?key=Your_Secret_Key</code>
+<code>GET /api/visitlog?key=YOUR_ADMIN_PASSWORD</code>
 <code>
 {
   "countries": {"XX": 1},
@@ -204,7 +210,7 @@ uvicorn main:app --host 0.0.0.0 --port 7979 --reload
 
 <div class="section">
 <h2>🛠️ Debug Headers</h2>
-<code>GET /api/debug/headers?key=Your_Secret_Key</code>
+<code>GET /api/debug/headers?key=YOUR_ADMIN_PASSWORD</code>
 </div>
 
 <div class="section">
@@ -214,13 +220,13 @@ uvicorn main:app --host 0.0.0.0 --port 7979 --reload
 <li>folders.json</li>
 <li>tags.json</li>
 </ul>
-<code>POST /api/cache/rebuild?key=Your_Secret_Key</code>
+<code>POST /api/admin/cache/rebuild (X-Admin-Key header)</code>
 </div>
 
 <div class="section">
 <h2>⚠️ Notes</h2>
 <ul>
-<li>Keep your secret key secure</li>
+<li>Keep the passwords in config.toml private</li>
 <li>Changes may not reflect until cache rebuild</li>
 <li>Optimized for Cloudflare Tunnel headers</li>
 </ul>

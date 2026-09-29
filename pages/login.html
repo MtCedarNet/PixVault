@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ログイン | PixVault</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { min-height: 100vh; margin: 0; display: grid; place-items: center; background: #101216; color: #f2f3f5; }
+    main { width: min(100% - 2rem, 420px); padding: 2rem; border: 1px solid #343944; border-radius: 16px; background: #1b1e25; }
+    h1 { margin: 0 0 .5rem; font-size: 1.6rem; }
+    p { color: #b9bec8; }
+    label { display: block; margin: 1.5rem 0 .5rem; }
+    input, button { width: 100%; padding: .8rem 1rem; border-radius: 8px; font: inherit; }
+    input { border: 1px solid #555b66; background: #101216; color: #fff; }
+    input:focus { outline: 2px solid #96b9ff; outline-offset: 2px; }
+    button { margin-top: 1rem; border: 0; background: #9dbbff; color: #101216; font-weight: 700; cursor: pointer; }
+    .error { min-height: 1.5em; color: #ff9c9c; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>PixVault</h1>
+    <p>ギャラリーを表示するにはパスワードを入力してください。</p>
+    <form method="post" action="/login">
+      <input type="hidden" name="next" value="{{NEXT}}">
+      <label for="password">パスワード</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+      <p class="error" role="alert">{{ERROR}}</p>
+      <button type="submit">ログイン</button>
+    </form>
+  </main>
+</body>
+</html>

@@ -8,6 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/popupable@1.11.0/dist/popupable.min.css" rel="stylesheet">
 <style>
 
   :root {
@@ -75,6 +76,7 @@
   .nav-link { color: var(--muted) !important; font-size: .85rem; transition: color .2s; }
   .nav-link:hover { color: var(--text) !important; }
   .nav-link.active { color: var(--accent) !important; }
+  .logout-button { border: 0; background: none; cursor: pointer; }
 
   /* ── Search bar ── */
   .search-wrap {
@@ -103,6 +105,26 @@
     font-size: .75rem;
     color: var(--muted);
     white-space: nowrap;
+  }
+  .folder-controls { display: flex; align-items: center; gap: .5rem; }
+  #breadcrumbs {
+    display: flex; flex-wrap: wrap; align-items: center; gap: .35rem;
+    padding: .65rem 1rem 0; font-size: .8rem; color: var(--muted);
+  }
+  #breadcrumbs[hidden] { display: none; }
+  #breadcrumbs button {
+    border: 0; background: none; color: var(--accent); cursor: pointer; padding: 0;
+  }
+  .folder-path { font-size: .65rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .folder-actions { display: flex; justify-content: space-between; align-items: center; gap: .25rem; margin-top: .4rem; }
+  .folder-actions button {
+    background: rgba(124,106,247,.15); color: var(--accent); border: 1px solid rgba(124,106,247,.35);
+    border-radius: 6px; padding: .2rem .35rem; font-size: .68rem; cursor: pointer;
+  }
+  @media (max-width: 700px) {
+    .search-wrap { flex-wrap: wrap; }
+    .search-input { flex-basis: 100%; }
+    .folder-controls { width: 100%; justify-content: flex-end; }
   }
 
   /* ── Folder grid ── */
@@ -191,7 +213,7 @@
   }
   @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 
-  /* ── Modal lightbox for folder view ── */
+  /* ── Folder modal ── */
   #folderModal {
     display: none;
     position: fixed; inset: 0;
@@ -262,46 +284,6 @@
   }
   .modal-img:hover { transform: scale(1.04); filter: brightness(.8); }
 
-  /* ── Lightbox for single image ── */
-  #lightbox {
-    display: none;
-    position: fixed; inset: 0;
-    background: rgba(0,0,0,.95);
-    z-index: 10000;
-    align-items: center;
-    justify-content: center;
-    backdrop-filter: blur(8px);
-  }
-  #lightbox.open { display: flex; }
-  #lightbox img {
-    max-width: 96vw; max-height: 92vh;
-    object-fit: contain;
-    border-radius: 12px;
-    user-select: none;
-  }
-  .lb-close {
-    position: fixed; top: 1rem; right: 1rem;
-    width: 40px; height: 40px;
-    border-radius: 50%;
-    background: rgba(255,255,255,.12);
-    border: none; color: #fff;
-    font-size: 1.1rem;
-    display: flex; align-items: center; justify-content: center;
-    cursor: pointer; z-index: 10001;
-  }
-  .lb-close:hover { background: rgba(255,255,255,.22); }
-  .lb-nav {
-    position: fixed; top: 50%; transform: translateY(-50%);
-    width: 44px; height: 44px; border-radius: 50%;
-    background: rgba(255,255,255,.1); border: none; color: #fff;
-    font-size: 1.2rem;
-    display: flex; align-items: center; justify-content: center;
-    cursor: pointer; z-index: 10001; transition: background .2s;
-  }
-  .lb-nav:hover { background: rgba(255,255,255,.25); }
-  #lb-prev { left: .75rem; }
-  #lb-next { right: .75rem; }
-
   .fade-in { animation: fadeIn .3s ease forwards; }
   @keyframes fadeIn { from { opacity:0; transform: scale(.97); } to { opacity:1; transform: none; } }
 
@@ -317,6 +299,8 @@
     <span class="navbar-brand"><i class="bi bi-grid-3x3-gap-fill me-2"></i>PixVault</span>
     <a href="/" class="nav-link ms-auto">Gallery</a>
     <a href="/folders" class="nav-link active">Folders</a>
+    <a href="/admin" class="nav-link">Admin</a>
+    <form method="post" action="/logout"><button class="nav-link logout-button" type="submit">Logout</button></form>
     <span class="nav-stats" id="navStats" title="Unique visitors / Total visits">
       <i class="bi bi-eye"></i> <span id="statUnique">—</span>
       <span class="stat-sep">·</span>
@@ -328,6 +312,11 @@
 <!-- Search -->
 <div class="search-wrap">
   <input type="search" class="search-input" id="searchInput" placeholder="Search folders">
+  <div class="folder-controls">
+  <select id="viewModeSelect" class="sort-select" aria-label="Folder view mode">
+    <option value="flat">All folders</option>
+    <option value="tree">Browse folders</option>
+  </select>
   <span class="count-badge" id="countBadge">—</span>
   <select id="folderSortSelect" class="sort-select">
     <option value="default">Default</option>
@@ -339,7 +328,10 @@
     <option value="az">A → Z</option>
     <option value="za">Z → A</option>
   </select>
+  </div>
 </div>
+
+<div id="breadcrumbs" aria-label="Folder path" hidden></div>
 
 <!-- Folder grid -->
 <div id="folderGrid">
@@ -370,25 +362,40 @@
     <option value="oldest">Oldest first</option>
   </select>
   </div>
-  <div id="modalGrid">
+  <div id="modalGrid" data-popupable-group="folder-images" data-popupable-looping data-popupable-counter>
     <div id="modalSentinel" style="height:40px;display:flex;align-items:center;justify-content:center;grid-column:1/-1">
       <div class="spinner-border spinner-border-sm text-secondary"></div>
     </div>
   </div>
 </div>
 
-<!-- Single image lightbox -->
-<div id="lightbox">
-  <button class="lb-close" onclick="closeLb()"><i class="bi bi-x-lg"></i></button>
-  <button class="lb-nav" id="lb-prev" onclick="lbNav(-1)"><i class="bi bi-chevron-left"></i></button>
-  <img id="lb-img" src="" alt="">
-  <button class="lb-nav" id="lb-next" onclick="lbNav(1)"><i class="bi bi-chevron-right"></i></button>
-</div>
-
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/npm/popupable@1.11.0/dist/popupable.min.js"></script>
 <script>
 let allFolders = [];
-let filteredFolders = [];
+let hotFolders = [];
+let currentPath = new URLSearchParams(window.location.search).get('folder') || '';
+let visibleChildCounts = new Map();
+let viewMode = (currentPath || localStorage.getItem('pixvault-folder-mode') === 'tree') ? 'tree' : 'flat';
+let hotRequestId = 0;
+document.getElementById('viewModeSelect').value = viewMode;
+function folderUrl(path) {
+  const url = new URL(window.location.href);
+  if (path) url.searchParams.set('folder', path);
+  else url.searchParams.delete('folder');
+  return url;
+}
+function folderHistoryState(extra = {}) {
+  return { pixvaultFolder: true, folderMode: viewMode, folderPath: currentPath, overlay: '', ...extra };
+}
+history.replaceState(folderHistoryState(), '', folderUrl(currentPath));
+function navigateFolder(path) {
+  if (path === currentPath) return;
+  const previousFolderPath = currentPath;
+  currentPath = path;
+  history.pushState(folderHistoryState({ previousFolderPath }), '', folderUrl(path));
+  refreshFolders();
+}
 let modalSort = '';
 let modalAbortController = null;
 document.getElementById('modalSortSelect').addEventListener('change', function() {
@@ -407,36 +414,42 @@ function sortFolders(folders, mode) {
   const f = [...folders];
   if (mode === 'newest') f.sort((a, b) => (b.mtime_latest || 0) - (a.mtime_latest || 0));
   else if (mode === 'oldest') f.sort((a, b) => (a.mtime_earliest || 0) - (b.mtime_earliest || 0));
-  else if (mode === 'most') f.sort((a, b) => b.count - a.count);
-  else if (mode === 'least') f.sort((a, b) => a.count - b.count);
+  else if (mode === 'most') f.sort((a, b) => (viewMode === 'tree' ? b.total_count - a.total_count : b.count - a.count));
+  else if (mode === 'least') f.sort((a, b) => (viewMode === 'tree' ? a.total_count - b.total_count : a.count - b.count));
   else if (mode === 'az') f.sort((a, b) => (a.display_name||a.name).localeCompare(b.display_name||b.name));
   else if (mode === 'za') f.sort((a, b) => (b.display_name||b.name).localeCompare(a.display_name||a.name));
   return f;
 }
 
 document.getElementById('folderSortSelect').addEventListener('change', async function() {
-  const mode = this.value;
-  if (mode === 'hot') {
-    // fetch server-side hot sort
-    const res = await fetch('/api/folders?sort=hot');
-    const hotFolders = await res.json();
-    renderFolders(hotFolders);
-    updateCount(hotFolders.length);
-  } else {
-    const sorted = sortFolders(filteredFolders, mode);
-    renderFolders(sorted);
+  const requestId = ++hotRequestId;
+  if (this.value === 'hot') {
+    try {
+      const res = await fetch('/api/folders?include_parents=true&sort=hot');
+      if (!res.ok) throw new Error('Could not load hot folders');
+      const folders = await res.json();
+      if (requestId !== hotRequestId) return;
+      hotFolders = folders;
+    } catch (e) { console.error(e); hotFolders = []; }
   }
+  refreshFolders();
+});
+document.getElementById('viewModeSelect').addEventListener('change', function() {
+  viewMode = this.value;
+  localStorage.setItem('pixvault-folder-mode', viewMode);
+  currentPath = '';
+  history.pushState(folderHistoryState(), '', folderUrl(''));
+  refreshFolders();
 });
 
 // ── Load folders ──────────────────────────────────────────────────────────
 async function loadFolders() {
   try {
-    const res = await fetch('/api/folders');
+    const res = await fetch('/api/folders?include_parents=true');
+    if (!res.ok) throw new Error('Could not load folders');
     allFolders = await res.json();
-    filteredFolders = allFolders;
     document.getElementById('skelWrap').remove();
-    renderFolders(allFolders);
-    updateCount(allFolders.length);
+    refreshFolders();
   } catch(e) {
     console.error(e);
     document.getElementById('folderGrid').innerHTML =
@@ -447,10 +460,73 @@ async function loadFolders() {
   }
 }
 
+function refreshFolders() {
+  const source = document.getElementById('folderSortSelect').value === 'hot' ? hotFolders : allFolders;
+  const q = document.getElementById('searchInput').value.toLowerCase().trim();
+  const matches = f => !q || f.name.toLowerCase().includes(q) ||
+    f.display_name.toLowerCase().includes(q) || f.tags.some(t => t.toLowerCase().includes(q));
+  let folders;
+  if (viewMode === 'flat') {
+    folders = source.filter(f => f.count > 0 && matches(f));
+  } else {
+    const visible = new Set();
+    const matched = new Set(source.filter(matches).map(f => f.name));
+    for (const f of source) {
+      let path = f.name;
+      while (path) {
+        if (matched.has(path)) { visible.add(f.name); break; }
+        path = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+      }
+    }
+    source.filter(f => matched.has(f.name)).forEach(f => {
+      let parent = f.parent;
+      while (parent) {
+        visible.add(parent);
+        parent = parent.includes('/') ? parent.slice(0, parent.lastIndexOf('/')) : '';
+      }
+    });
+    visibleChildCounts = new Map();
+    source.filter(f => visible.has(f.name)).forEach(f => {
+      visibleChildCounts.set(f.parent, (visibleChildCounts.get(f.parent) || 0) + 1);
+    });
+    if (currentPath && allFolders.length && !allFolders.some(f => f.name === currentPath)) {
+      currentPath = '';
+      history.replaceState(folderHistoryState(), '', folderUrl(''));
+    }
+    folders = source.filter(f => f.parent === currentPath && visible.has(f.name));
+  }
+  const mode = document.getElementById('folderSortSelect').value;
+  renderFolders(mode === 'hot' ? folders : sortFolders(folders, mode));
+  updateCount(folders.length);
+  renderBreadcrumbs();
+}
+
+function renderBreadcrumbs() {
+  const bar = document.getElementById('breadcrumbs');
+  bar.replaceChildren();
+  bar.hidden = viewMode !== 'tree';
+  if (viewMode !== 'tree') return;
+  const root = document.createElement('button');
+  root.textContent = 'Downloads';
+  root.onclick = () => navigateFolder('');
+  bar.appendChild(root);
+  let path = '';
+  for (const part of currentPath.split('/').filter(Boolean)) {
+    path = path ? path + '/' + part : part;
+    const separator = document.createElement('span');
+    separator.textContent = '/';
+    bar.appendChild(separator);
+    const crumb = document.createElement('button');
+    crumb.textContent = allFolders.find(f => f.name === path)?.display_name || part;
+    const target = path;
+    crumb.onclick = () => navigateFolder(target);
+    bar.appendChild(crumb);
+  }
+}
+
 function renderFolders(folders) {
   const grid = document.getElementById('folderGrid');
-  // remove old cards (leave skelWrap if still present)
-  grid.querySelectorAll('.folder-card').forEach(c => c.remove());
+  grid.replaceChildren();
 
   if (folders.length === 0) {
     grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1">
@@ -459,9 +535,20 @@ function renderFolders(folders) {
   }
 
   folders.forEach(f => {
+    const childrenInView = viewMode === 'tree' ? (visibleChildCounts.get(f.name) || 0) : 0;
     const card = document.createElement('div');
     card.className = 'folder-card fade-in';
-    card.onclick = () => openFolder(f.name, f.display_name || f.name);
+    card.setAttribute('role', 'button');
+    card.tabIndex = 0;
+    const activate = () => {
+      if (viewMode === 'tree' && childrenInView > 0) {
+        navigateFolder(f.name);
+      } else if (f.count > 0) {
+        openFolder(f.name, f.display_name || f.basename);
+      }
+    };
+    card.onclick = activate;
+    card.onkeydown = e => { if (e.target === card && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); activate(); } };
 
     const img = document.createElement('img');
     img.className = 'folder-thumb';
@@ -474,13 +561,46 @@ function renderFolders(folders) {
     const info = document.createElement('div');
     info.className = 'folder-info';
 
-    const displayName = f.display_name || f.name;
-    const cardLabel = displayName.length > 22 ? displayName.slice(0,20)+'…' : displayName;
-    info.innerHTML = `
-      <div style="font-size:.8rem;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${displayName}">${cardLabel}</div>
-      <div class="folder-count"><i class="bi bi-images"></i>${f.count.toLocaleString()} photos</div>
-      <div class="folder-tags">${f.tags.slice(0,3).map(t=>`<span class="tag-pill">${t}</span>`).join('')}</div>
-    `;
+    const displayName = f.display_name || f.basename;
+    const title = document.createElement('div');
+    title.style.cssText = 'font-size:.8rem;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    title.title = displayName;
+    title.textContent = displayName;
+    info.appendChild(title);
+    if (viewMode === 'flat' && f.parent) {
+      const path = document.createElement('div');
+      path.className = 'folder-path';
+      path.title = f.name;
+      path.textContent = f.parent;
+      info.appendChild(path);
+    }
+    const count = document.createElement('div');
+    count.className = 'folder-count';
+    count.textContent = `${viewMode === 'tree' ? f.total_count : f.count} photos`;
+    info.appendChild(count);
+    if (viewMode === 'tree') {
+      const actions = document.createElement('div');
+      actions.className = 'folder-actions';
+      const children = document.createElement('span');
+      children.textContent = childrenInView ? `${childrenInView} folders` : '';
+      actions.appendChild(children);
+      if (f.count > 0 && childrenInView > 0) {
+        const view = document.createElement('button');
+        view.textContent = `View ${f.count} photos`;
+        view.onclick = e => { e.stopPropagation(); openFolder(f.name, displayName); };
+        actions.appendChild(view);
+      }
+      info.appendChild(actions);
+    }
+    const tags = document.createElement('div');
+    tags.className = 'folder-tags';
+    f.tags.slice(0,3).forEach(tag => {
+      const pill = document.createElement('span');
+      pill.className = 'tag-pill';
+      pill.textContent = tag;
+      tags.appendChild(pill);
+    });
+    info.appendChild(tags);
 
     card.appendChild(img);
     card.appendChild(info);
@@ -494,12 +614,7 @@ function updateCount(n) {
 
 // ── Search ────────────────────────────────────────────────────────────────
 document.getElementById('searchInput').addEventListener('input', function() {
-  const q = this.value.toLowerCase().trim();
-  filteredFolders = q ? allFolders.filter(f =>
-    f.name.toLowerCase().includes(q) || f.tags.some(t => t.includes(q))
-  ) : allFolders;
-  renderFolders(filteredFolders);
-  updateCount(filteredFolders.length);
+  refreshFolders();
 });
 
 // ── Folder modal ──────────────────────────────────────────────────────────
@@ -508,11 +623,19 @@ let modalHasMore = true;
 let modalLoading = false;
 let modalFolder = '';
 let modalItems = [];
-let lbIndex = 0;
+let activePopupSource = null;
+let activePopupElement = null;
+let popupClosingFromHistory = false;
 
-async function openFolder(name, displayName) {
+function dismissPopup() {
+  (activePopupElement || document).dispatchEvent(new KeyboardEvent('keydown', {
+    key: 'Escape', code: 'Escape', bubbles: true, cancelable: true,
+  }));
+}
+
+async function openFolder(name, displayName, recordHistory = true) {
   // log folder visit
-  fetch('/api/hot/folder?name=' + encodeURIComponent(name), { method: 'POST' });
+  if (recordHistory) fetch('/api/hot/folder?name=' + encodeURIComponent(name), { method: 'POST' });
   modalFolder = name;
   modalPage = 1;
   modalHasMore = true;
@@ -526,6 +649,9 @@ async function openFolder(name, displayName) {
   document.getElementById('modalCount').textContent = '';
   document.getElementById('folderModal').classList.add('open');
   document.body.style.overflow = 'hidden';
+  if (recordHistory) {
+    history.pushState(folderHistoryState({ overlay: 'modal', modalFolder: name, modalDisplayName: displayName }), '', folderUrl(currentPath));
+  }
   await loadModalPage();
 }
 
@@ -535,7 +661,9 @@ async function loadModalPage() {
   document.getElementById('modalSentinel').style.display = 'flex';
   modalAbortController = new AbortController();
   try {
-    const res = await fetch(`/api/folder/${encodeURIComponent(modalFolder)}?page=${modalPage}&per_page=20&sort=${modalSort||''}`, { signal: modalAbortController.signal });
+    const path = modalFolder.split('/').map(encodeURIComponent).join('/');
+    const res = await fetch(`/api/folder/${path}?page=${modalPage}&per_page=20&sort=${modalSort||''}`, { signal: modalAbortController.signal });
+    if (!res.ok) throw new Error('Could not load folder images');
     const data = await res.json();
     modalHasMore = data.has_more;
     modalPage++;
@@ -547,10 +675,14 @@ async function loadModalPage() {
       const img = document.createElement('img');
       img.className = 'modal-img fade-in';
       img.src = item.thumb_url || item.url;
+      img.dataset.popupable = '';
+      img.dataset.popupableSrc = item.url;
+      img.dataset.popupableThumb = item.thumb_url || item.url;
+      img.dataset.popupableDescription = item.display_name || item.folder;
+      img.dataset.popupableGroup = 'folder-images';
       img.alt = item.folder;
       img.loading = 'lazy';
       img.dataset.idx = modalItems.length - 1;
-      img.onclick = () => openLb(parseInt(img.dataset.idx));
       document.getElementById('modalGrid').insertBefore(img, sentinel);
     });
 
@@ -576,7 +708,7 @@ document.getElementById('modalGrid').addEventListener('scroll', () => {
     loadModalPage();
   }
 }, { passive: true });
-function closeModal() {
+function hideModal() {
   if (modalAbortController) modalAbortController.abort();
   modalObserver.disconnect();
   modalLoading = false;
@@ -586,53 +718,70 @@ function closeModal() {
   document.body.style.overflow = '';
 }
 
-// Close modal on back button (Android)
-window.addEventListener('popstate', () => {
-  if (document.getElementById('lightbox').classList.contains('open')) closeLb();
-  else if (document.getElementById('folderModal').classList.contains('open')) closeModal();
+function closeModal() {
+  if (history.state?.pixvaultFolder && history.state.overlay === 'modal') history.back();
+  else hideModal();
+}
+
+window.addEventListener('popstate', event => {
+  const state = event.state?.pixvaultFolder ? event.state : null;
+  let overlay = state?.overlay || '';
+  if (activePopupSource && overlay !== 'popup') {
+    popupClosingFromHistory = true;
+    dismissPopup();
+  }
+  if (document.getElementById('folderModal').classList.contains('open') && overlay !== 'modal' && overlay !== 'popup') {
+    hideModal();
+  }
+  viewMode = state?.folderMode || (new URLSearchParams(window.location.search).has('folder') ? 'tree' : viewMode);
+  currentPath = viewMode === 'tree' ? (state?.folderPath || new URLSearchParams(window.location.search).get('folder') || '') : '';
+  document.getElementById('viewModeSelect').value = viewMode;
+  localStorage.setItem('pixvault-folder-mode', viewMode);
+  refreshFolders();
+  if (overlay === 'popup' && !activePopupSource) {
+    overlay = 'modal';
+    history.replaceState({ ...state, overlay }, '', folderUrl(currentPath));
+  }
+  if ((overlay === 'modal' || overlay === 'popup') && !document.getElementById('folderModal').classList.contains('open') && state?.modalFolder) {
+    openFolder(state.modalFolder, state.modalDisplayName, false);
+  }
 });
 
 document.getElementById('folderModal').addEventListener('click', e => {
   if (e.target === document.getElementById('folderModal')) closeModal();
 });
 
-// ── Lightbox ──────────────────────────────────────────────────────────────
-function openLb(idx) {
-  lbIndex = idx;
-  document.getElementById('lb-img').src = modalItems[idx].url;
-  document.getElementById('lightbox').classList.add('open');
-  history.pushState({ lb: true }, '');
-  // log this image click
-  fetch('/api/hot/image?url=' + encodeURIComponent(modalItems[idx].url), { method: 'POST' });
-}
-function closeLb() {
-  document.getElementById('lightbox').classList.remove('open');
-}
-function lbNav(dir) {
-  lbIndex = (lbIndex + dir + modalItems.length) % modalItems.length;
-  document.getElementById('lb-img').src = modalItems[lbIndex].url;
-}
-
-document.getElementById('lightbox').addEventListener('click', e => {
-  if (e.target === document.getElementById('lightbox')) closeLb();
+document.addEventListener('popupable:open', e => {
+  const wasOpen = Boolean(activePopupSource);
+  activePopupSource = e.target;
+  activePopupElement = e.detail.popup;
+  if (!wasOpen) {
+    history.pushState(folderHistoryState({ overlay: 'popup', modalFolder, modalDisplayName: document.getElementById('modalTitle').textContent }), '', folderUrl(currentPath));
+  }
+  const idx = Number(e.target.dataset.idx);
+  const item = modalItems[idx];
+  if (item) fetch('/api/hot/image?url=' + encodeURIComponent(item.url), { method: 'POST' });
+});
+document.addEventListener('popupable:close', () => {
+  activePopupSource = null;
+  activePopupElement = null;
+  if (popupClosingFromHistory) { popupClosingFromHistory = false; return; }
+  if (history.state?.pixvaultFolder && history.state.overlay === 'popup') history.back();
 });
 
 document.addEventListener('keydown', e => {
-  if (!document.getElementById('lightbox').classList.contains('open')) return;
-  if (e.key === 'Escape') closeLb();
-  if (e.key === 'ArrowRight') lbNav(1);
-  if (e.key === 'ArrowLeft') lbNav(-1);
+  if (e.key !== 'Escape' || e.defaultPrevented || activePopupSource || history.state?.overlay === 'popup') return;
+  if (document.getElementById('folderModal').classList.contains('open')) {
+    e.preventDefault();
+    closeModal();
+    return;
+  }
+  if (viewMode !== 'tree' || !currentPath) return;
+  e.preventDefault();
+  const parent = currentPath.includes('/') ? currentPath.slice(0, currentPath.lastIndexOf('/')) : '';
+  if (history.state?.previousFolderPath === parent && history.state.overlay === '') history.back();
+  else navigateFolder(parent);
 });
-
-// Touch swipe on lightbox
-let touchStartX = 0;
-document.getElementById('lightbox').addEventListener('touchstart', e => {
-  touchStartX = e.changedTouches[0].clientX;
-}, { passive: true });
-document.getElementById('lightbox').addEventListener('touchend', e => {
-  const dx = e.changedTouches[0].clientX - touchStartX;
-  if (Math.abs(dx) > 50) lbNav(dx < 0 ? 1 : -1);
-}, { passive: true });
 
 // ── Init ──────────────────────────────────────────────────────────────────
 loadFolders();

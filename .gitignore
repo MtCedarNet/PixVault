@@ -1,0 +1,17 @@
+# Local credentials and media
+/config.toml
+/Downloads/
+/Data/
+/data/
+/Gallary/
+/Gallery/
+/thumbnails/
+/site_images/
+/log/
+
+# Local tools and generated files
+/venv/
+/nssm.exe
+__pycache__/
+*.py[cod]
+.pytest_cache/
