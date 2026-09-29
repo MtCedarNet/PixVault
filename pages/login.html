@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="ja">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ログイン | PixVault</title>
+  <title>Sign in | PixVault</title>
   <style>
     :root { color-scheme: dark; font-family: system-ui, sans-serif; }
     * { box-sizing: border-box; }
@@ -22,13 +22,13 @@
 <body>
   <main>
     <h1>PixVault</h1>
-    <p>ギャラリーを表示するにはパスワードを入力してください。</p>
+    <p>Enter your password to view the gallery.</p>
     <form method="post" action="/login">
       <input type="hidden" name="next" value="{{NEXT}}">
-      <label for="password">パスワード</label>
+      <label for="password">Password</label>
       <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
       <p class="error" role="alert">{{ERROR}}</p>
-      <button type="submit">ログイン</button>
+      <button type="submit">Sign in</button>
     </form>
   </main>
 </body>

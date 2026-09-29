@@ -121,7 +121,7 @@ def _safe_next(value: str | None) -> str:
 def _login_page(next_path: str = "/", error: bool = False) -> HTMLResponse:
     page = (PAGES_DIR / "login.html").read_text(encoding="utf-8")
     page = page.replace("{{NEXT}}", html.escape(_safe_next(next_path), quote=True))
-    page = page.replace("{{ERROR}}", "パスワードが違います。" if error else "")
+    page = page.replace("{{ERROR}}", "Incorrect password. Please try again." if error else "")
     response = HTMLResponse(page, status_code=401 if error else 200)
     response.headers["Cache-Control"] = "no-store"
     return response

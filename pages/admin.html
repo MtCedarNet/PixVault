@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="ja">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>管理 | PixVault</title>
+<title>Admin | PixVault</title>
 <style>
   :root { color-scheme: dark; --bg:#0a0a0f; --surface:#14141e; --border:#292938; --text:#e2e2ef; --muted:#9999ac; --accent:#9b8cff; --error:#ff9a9a; }
   * { box-sizing: border-box; }
@@ -42,7 +42,7 @@
 </style>
 </head>
 <body>
-<nav aria-label="メインナビゲーション">
+<nav aria-label="Main navigation">
   <strong>PixVault</strong>
   <a href="/">Gallery</a>
   <a href="/folders">Folders</a>
@@ -50,39 +50,39 @@
   <form method="post" action="/logout"><button class="logout-button" type="submit">Logout</button></form>
 </nav>
 <main>
-  <h1>管理</h1>
-  <p>画像を追加した後や、タグ・表示名を変更した後に更新してください。</p>
+  <h1>Admin</h1>
+  <p>Refresh the gallery after adding images or changing tags or folder names.</p>
   <div class="grid">
     <section class="card full">
-      <h2>管理キー</h2>
-      <label for="adminKey">config.toml の auth.admin_password</label>
-      <input id="adminKey" type="password" autocomplete="off" spellcheck="false" placeholder="管理キーを入力">
-      <p class="small">操作時だけ使用します。このページには保存されません。</p>
+      <h2>Admin password</h2>
+      <label for="adminKey">auth.admin_password in config.toml</label>
+      <input id="adminKey" type="password" autocomplete="off" spellcheck="false" placeholder="Enter admin password">
+      <p class="small">Used only for these actions. It is not saved on this page.</p>
     </section>
     <section class="card">
-      <h2>ギャラリーのキャッシュ</h2>
+      <h2>Gallery cache</h2>
       <div class="metrics">
-        <div><strong id="folderCount">—</strong><span>フォルダー</span></div>
-        <div><strong id="imageCount">—</strong><span>画像</span></div>
+        <div><strong id="folderCount">—</strong><span>folders</span></div>
+        <div><strong id="imageCount">—</strong><span>images</span></div>
       </div>
-      <p class="small" id="builtAt">更新日時を取得中…</p>
-      <button id="rebuildButton" type="button">ギャラリーを再構築</button>
+      <p class="small" id="builtAt">Loading last update…</p>
+      <button id="rebuildButton" type="button">Rebuild gallery</button>
     </section>
     <section class="card">
-      <h2>サムネイル</h2>
-      <p id="thumbStatus">状態を取得中…</p>
-      <button id="thumbButton" type="button">不足分を生成</button>
-      <div class="bar" role="progressbar" aria-label="サムネイル生成の進捗" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progressBar"><div id="progressFill"></div></div>
-      <p class="small" id="thumbProgress" aria-live="polite">実行待ち</p>
+      <h2>Thumbnails</h2>
+      <p id="thumbStatus">Loading status…</p>
+      <button id="thumbButton" type="button">Generate missing thumbnails</button>
+      <div class="bar" role="progressbar" aria-label="Thumbnail generation progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progressBar"><div id="progressFill"></div></div>
+      <p class="small" id="thumbProgress" aria-live="polite">Not started</p>
     </section>
     <section class="card full">
-      <h2>フォルダー情報ファイル</h2>
-      <p>タグの生成は未登録フォルダーを追加します。表示名の生成は folders.json の手動編集を上書きします。</p>
+      <h2>Folder information</h2>
+      <p>Adding tags includes folders not yet listed. Generating folder names overwrites manual edits in folders.json.</p>
       <div class="actions">
-        <button id="tagsButton" class="secondary" type="button">不足するタグを追加</button>
-        <button id="foldersButton" class="secondary" type="button">表示名ファイルを生成</button>
+        <button id="tagsButton" class="secondary" type="button">Add missing tags</button>
+        <button id="foldersButton" class="secondary" type="button">Generate folder names</button>
       </div>
-      <p class="small">ファイルを編集した後は「ギャラリーを再構築」を押してください。</p>
+      <p class="small">After editing these files, click Rebuild gallery.</p>
     </section>
   </div>
   <p id="message" role="status" aria-live="polite"></p>
@@ -107,7 +107,7 @@ function updateButtons() {
 async function readJson(url, options) {
   const response = await fetch(url, { cache: 'no-store', ...options });
   const data = await response.json();
-  if (!response.ok) throw new Error(response.status === 403 ? '管理キーが正しくありません。' : (data.detail || `HTTP ${response.status}`));
+  if (!response.ok) throw new Error(response.status === 403 ? 'Incorrect admin password.' : (data.detail || `HTTP ${response.status}`));
   return data;
 }
 
@@ -120,10 +120,10 @@ async function refreshStatus() {
     document.getElementById('folderCount').textContent = cache.folders.toLocaleString();
     document.getElementById('imageCount').textContent = cache.images.toLocaleString();
     document.getElementById('builtAt').textContent = cache.built_at
-      ? `最終再構築: ${new Date(cache.built_at * 1000).toLocaleString()}` : '未構築';
-    document.getElementById('thumbStatus').textContent = `${thumbs.thumbs.toLocaleString()} / ${thumbs.total.toLocaleString()} 件のサムネイル`;
+      ? `Last rebuilt: ${new Date(cache.built_at * 1000).toLocaleString()}` : 'Not built yet';
+    document.getElementById('thumbStatus').textContent = `${thumbs.thumbs.toLocaleString()} of ${thumbs.total.toLocaleString()} thumbnails ready`;
   } catch (error) {
-    setMessage(`状態を取得できません: ${error.message}`, true);
+    setMessage(`Could not load status: ${error.message}`, true);
   }
 }
 
@@ -137,27 +137,27 @@ async function refreshProgress() {
     document.getElementById('progressFill').style.width = `${percent}%`;
     document.getElementById('progressBar').setAttribute('aria-valuenow', percent);
     document.getElementById('thumbProgress').textContent = progress.running || progress.done
-      ? `${progress.done ? '完了' : '生成中'}: ${processed.toLocaleString()} / ${progress.total.toLocaleString()} 件（新規 ${progress.created.toLocaleString()}、既存 ${progress.skipped.toLocaleString()}、失敗 ${(progress.failed || 0).toLocaleString()}）${progress.running && progress.current ? ` · ${progress.current}` : ''}`
-      : '実行待ち';
+      ? `${progress.done ? 'Done' : 'Generating'}: ${processed.toLocaleString()} of ${progress.total.toLocaleString()} (${progress.created.toLocaleString()} new, ${progress.skipped.toLocaleString()} already present, ${(progress.failed || 0).toLocaleString()} failed)${progress.running && progress.current ? ` · ${progress.current}` : ''}`
+      : 'Not started';
     if (progress.done && !wasDone) await refreshStatus();
     wasDone = progress.done;
   } catch (error) {
-    setMessage(`進捗を取得できません: ${error.message}`, true);
+    setMessage(`Could not load progress: ${error.message}`, true);
   }
 }
 
 async function runAction(path, success) {
   const key = keyInput.value;
-  if (!key) { keyInput.focus(); setMessage('管理キーを入力してください。', true); return; }
+  if (!key) { keyInput.focus(); setMessage('Enter the admin password.', true); return; }
   busy = true;
   updateButtons();
-  setMessage('処理中…');
+  setMessage('Working…');
   try {
     const result = await readJson(path, { method:'POST', headers:{ 'X-Admin-Key': key } });
     setMessage(success(result));
     await Promise.all([refreshStatus(), refreshProgress()]);
   } catch (error) {
-    setMessage(`操作に失敗しました: ${error.message}`, true);
+    setMessage(`Action failed: ${error.message}`, true);
   } finally {
     busy = false;
     updateButtons();
@@ -165,15 +165,15 @@ async function runAction(path, success) {
 }
 
 document.getElementById('rebuildButton').onclick = () => runAction('/api/admin/cache/rebuild', result =>
-  `ギャラリーを再構築しました（${result.folders} フォルダー、${result.images} 画像）。`);
+  `Gallery rebuilt: ${result.folders} folders, ${result.images} images.`);
 document.getElementById('thumbButton').onclick = () => runAction('/api/admin/thumbnails/generate', result =>
-  result.status === 'already_running' ? 'サムネイル生成はすでに実行中です。' : `サムネイル生成を開始しました（対象 ${result.total} 件）。`);
+  result.status === 'already_running' ? 'Thumbnail generation is already running.' : `Thumbnail generation started for ${result.total} images.`);
 document.getElementById('tagsButton').onclick = () => runAction('/api/admin/tags/generate', result =>
-  `タグを更新しました（新規 ${result.new_folders_added} フォルダー）。反映するにはギャラリーを再構築してください。`);
+  `Tags updated for ${result.new_folders_added} new folders. Rebuild the gallery to see changes.`);
 document.getElementById('foldersButton').onclick = () => {
-  if (confirm('folders.json の手動編集を上書きします。続行しますか？')) {
+  if (confirm('This will overwrite manual edits in folders.json. Continue?')) {
     runAction('/api/admin/folders/generate', result =>
-      `表示名ファイルを生成しました（${result.folders} フォルダー）。反映するにはギャラリーを再構築してください。`);
+      `Folder names generated for ${result.folders} folders. Rebuild the gallery to see changes.`);
   }
 };
 
