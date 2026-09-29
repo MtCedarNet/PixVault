@@ -507,7 +507,7 @@ function renderBreadcrumbs() {
   bar.hidden = viewMode !== 'tree';
   if (viewMode !== 'tree') return;
   const root = document.createElement('button');
-  root.textContent = 'Downloads';
+  root.textContent = 'Gallery';
   root.onclick = () => navigateFolder('');
   bar.appendChild(root);
   let path = '';

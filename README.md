@@ -25,7 +25,7 @@ Open `http://localhost:7979` in a browser. Sign in with the gallery password you
 
 ## Configuration and gallery access
 
-Set your own values in `config.toml`:
+Replace the public example passwords and session secret with your own values in `config.toml`:
 
 ```toml
 [auth]
@@ -34,10 +34,10 @@ admin_password = "choose-a-different-admin-password"
 session_secret = "choose-a-separate-long-random-secret"
 
 [storage]
-images_dir = 'D:\Photos'
+images_dir = 'Gallery'
 ```
 
-`images_dir` points to the directory containing your image folders. It may also be relative to the project directory, such as `"Downloads"`. Windows paths can use single-quoted TOML strings as shown above. Restart the server after editing `config.toml`. The local file is ignored by Git; do not commit passwords. If `session_secret` is empty, sessions end when the server restarts. Set it to the same long random value on every worker to keep sessions valid across workers and restarts.
+`images_dir = 'Gallery'` uses the `Gallery` folder beside `main.py`. Create subfolders there for your photos. You can use another location, including an absolute Windows path such as `images_dir = 'D:\Gallery'`. Restart the server after editing `config.toml`. The local file is ignored by Git; do not commit passwords. If `session_secret` is empty, sessions end when the server restarts. Set it to the same long random value on every worker to keep sessions valid across workers and restarts.
 
 PixVault denies gallery access until `auth.gallery_password` is set. The login protects the gallery, folders, admin page, APIs, full-size media, and thumbnails. Sessions expire after 12 hours; use **Logout** to end one sooner. Changing the gallery password invalidates existing sessions. Management actions require the separate `auth.admin_password`; leaving it empty disables them. Use HTTPS when exposing the gallery beyond your own computer.
 
@@ -76,7 +76,7 @@ PixVault/
 ├── config.example.toml  # Public configuration template
 ├── config.toml          # Local settings; ignored by Git
 ├── requirements.txt
-├── Downloads/           # Example image library; folders can be nested
+├── Gallery/             # Photo library; folders can be nested
 │   └── Trips/
 │       └── 2026/
 │           └── photo.jpg

@@ -1,10 +1,10 @@
 [auth]
-# Fill these in after copying this file to config.toml.
-# Empty passwords disable access until configured.
-gallery_password = ""
-admin_password = ""
-session_secret = ""
+# Public example values. Replace them after copying to private config.toml.
+# PixVault denies access if config.toml is missing.
+gallery_password = "choose-a-long-unique-password"
+admin_password = "choose-a-different-admin-password"
+session_secret = "choose-a-separate-long-random-secret"
 
 [storage]
-# Path to your own image library, relative to this project or absolute.
-images_dir = "Downloads"
+# Photo folders go under Gallery by default; an absolute path also works.
+images_dir = "Gallery"

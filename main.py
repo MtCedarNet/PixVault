@@ -34,7 +34,8 @@ CONFIG_FILE = Path(__file__).resolve().parent / "config.toml"
 
 
 def load_config(path: Path = CONFIG_FILE) -> dict:
-    source = path if path.exists() else path.with_name("config.example.toml")
+    using_example = not path.exists()
+    source = path.with_name("config.example.toml") if using_example else path
     try:
         with source.open("rb") as config_file:
             config = tomllib.load(config_file)
@@ -46,6 +47,8 @@ def load_config(path: Path = CONFIG_FILE) -> dict:
     for name in ("gallery_password", "admin_password", "session_secret"):
         if not isinstance(auth.get(name), str):
             raise ValueError(f"{source}: auth.{name} must be a string")
+    if using_example:
+        auth = {**auth, "gallery_password": "", "admin_password": "", "session_secret": ""}
     images_dir = storage.get("images_dir")
     if not isinstance(images_dir, str) or not images_dir.strip():
         raise ValueError(f"{source}: storage.images_dir must be a non-empty path")
@@ -61,14 +64,16 @@ ADMIN_PASSWORD = CONFIG["auth"]["admin_password"]
 _SESSION_SECRET = CONFIG["auth"]["session_secret"].encode() or secrets.token_bytes(32)
 _SESSION_LIFETIME = 12 * 60 * 60
 _SESSION_COOKIE = "gallery_session"
-DOWNLOADS_DIR = CONFIG["images_dir"]
-CACHE_FILE    = Path(__file__).parent / "data" / "cache.json" # Cache file with image path,fodler details and tags. Used while serving on front-end. Created at first star and can be regenerated anytime with generate api endpoint.
-TAGS_FILE     = Path(__file__).parent / "data" / "tags.json" # Tags - Used for filters. Can be also used with cache by doing some changes. by default tags are added to cache and behaviour can be changed.
-FOLDERS_FILE  = Path(__file__).parent / "data" / "folders.json"
+IMAGES_DIR = CONFIG["images_dir"]
+DATA_DIR = Path(__file__).parent / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+CACHE_FILE    = DATA_DIR / "cache.json" # Cache file with image path,fodler details and tags. Used while serving on front-end. Created at first star and can be regenerated anytime with generate api endpoint.
+TAGS_FILE     = DATA_DIR / "tags.json" # Tags - Used for filters. Can be also used with cache by doing some changes. by default tags are added to cache and behaviour can be changed.
+FOLDERS_FILE  = DATA_DIR / "folders.json"
 CACHE_TTL     = 0  # 0 = never auto-expire
-STATS_FILE    = Path(__file__).parent / "data" / "stats.json"
-HOTLOG_FILE = Path(__file__).parent / "data" / "hotlog.json"
-VISITLOG_FILE = Path(__file__).parent / "data" / "visitlog.json"
+STATS_FILE    = DATA_DIR / "stats.json"
+HOTLOG_FILE = DATA_DIR / "hotlog.json"
+VISITLOG_FILE = DATA_DIR / "visitlog.json"
 THUMBNAILS_DIR = Path(__file__).parent / "thumbnails"
 THUMB_SIZE     = (400, 400)  # max width/height, keeps aspect ratio -  400x400 is more than enough for 1080p screens. 800x800 can be used for 1440p and above. seperate code can be added to use depending on resolution but not recommended as it increased backend load and caching.
 _thumb_progress = {"total": 0, "created": 0, "skipped": 0, "failed": 0, "running": False, "done": False}
@@ -88,7 +93,7 @@ class OptionalStaticFiles(StaticFiles):
 
 
 app.mount("/thumbs", StaticFiles(directory=str(THUMBNAILS_DIR)), name="thumbs")
-app.mount("/media", OptionalStaticFiles(directory=str(DOWNLOADS_DIR), check_dir=False), name="media")
+app.mount("/media", OptionalStaticFiles(directory=str(IMAGES_DIR), check_dir=False), name="media")
 PAGES_DIR = Path(__file__).parent / "pages"
 
 
@@ -390,15 +395,15 @@ _cache_lock = threading.Lock()
 
 
 def _image_folders():
-    """Yield directories and their immediate images, at any depth below Downloads."""
-    if not DOWNLOADS_DIR.exists():
+    """Yield directories and their immediate images, at any depth below the configured image directory."""
+    if not IMAGES_DIR.exists():
         return
-    for root, dirnames, filenames in os.walk(DOWNLOADS_DIR):
+    for root, dirnames, filenames in os.walk(IMAGES_DIR):
         folder = Path(root)
         dirnames[:] = sorted(name for name in dirnames if not (folder / name).is_symlink())
         images = [folder / name for name in sorted(filenames)
                   if (folder / name).suffix.lower() in IMAGE_EXTS]
-        if folder != DOWNLOADS_DIR and images:
+        if folder != IMAGES_DIR and images:
             yield folder, images
 
 
@@ -416,13 +421,13 @@ def _build_cache() -> dict:
     all_images: list = []
 
     for folder, images in _image_folders():
-        fname        = folder.relative_to(DOWNLOADS_DIR).as_posix()
+        fname        = folder.relative_to(IMAGES_DIR).as_posix()
         display_name = display_map.get(fname, folder.name)
         tags         = tag_map.get(fname, ["misc"])
-        urls         = [_url_for("media", f.relative_to(DOWNLOADS_DIR)) for f in images]
+        urls         = [_url_for("media", f.relative_to(IMAGES_DIR)) for f in images]
         mtimes = [f.stat().st_mtime for f in images]
         name_date = extract_date_from_name(fname)
-        first_thumb = _url_for("thumbs", images[0].relative_to(DOWNLOADS_DIR).with_suffix(".jpg"))
+        first_thumb = _url_for("thumbs", images[0].relative_to(IMAGES_DIR).with_suffix(".jpg"))
         folders[fname] = {
             "display_name":   display_name,
             "tags":           tags,
@@ -439,7 +444,7 @@ def _build_cache() -> dict:
             tag_index.setdefault(tag, []).append(fname)
 
         for img_path, url in zip(images, urls):
-            thumb_url = _url_for("thumbs", img_path.relative_to(DOWNLOADS_DIR).with_suffix(".jpg"))
+            thumb_url = _url_for("thumbs", img_path.relative_to(IMAGES_DIR).with_suffix(".jpg"))
             all_images.append({
                 "url":           url,
                 "thumb_url":     thumb_url,
@@ -451,10 +456,10 @@ def _build_cache() -> dict:
 
         # Include ancestors even when they have no images of their own.
         for ancestor in (folder, *folder.parents):
-            if ancestor == DOWNLOADS_DIR:
+            if ancestor == IMAGES_DIR:
                 break
-            path = ancestor.relative_to(DOWNLOADS_DIR).as_posix()
-            parent = ancestor.parent.relative_to(DOWNLOADS_DIR).as_posix()
+            path = ancestor.relative_to(IMAGES_DIR).as_posix()
+            parent = ancestor.parent.relative_to(IMAGES_DIR).as_posix()
             if parent == ".":
                 parent = ""
             node = directories.setdefault(path, {
@@ -509,7 +514,7 @@ def get_cache() -> dict:
         data = _build_cache()
         _cache = data
         _save_cache(data)
-        print(f"[cache] done — {len(data['all_images'])} images, {len(data['folders'])} folders")
+        print(f"[cache] done - {len(data['all_images'])} images, {len(data['folders'])} folders")
         return _cache
 
 
@@ -585,7 +590,7 @@ def generate_tags_file(key: str):
 
     new_folders = 0
     for folder, _ in _image_folders():
-        path = folder.relative_to(DOWNLOADS_DIR).as_posix()
+        path = folder.relative_to(IMAGES_DIR).as_posix()
         if path not in result:
             result[path] = ["misc"]
             new_folders += 1
@@ -818,7 +823,7 @@ def generate_thumbnails(key: str):
         tasks = []
         for folder, images in _image_folders():
             for img_path in images:
-                rel        = img_path.relative_to(DOWNLOADS_DIR)
+                rel        = img_path.relative_to(IMAGES_DIR)
                 thumb_path = THUMBNAILS_DIR / rel.with_suffix(".jpg")
                 tasks.append((img_path, thumb_path, THUMB_SIZE))
 

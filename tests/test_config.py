@@ -24,13 +24,16 @@ class ConfigTest(unittest.TestCase):
 
     def test_example_is_used_when_local_config_is_missing(self):
         content = (
-            '[auth]\ngallery_password = ""\nadmin_password = ""\n'
-            'session_secret = ""\n[storage]\nimages_dir = "Downloads"\n'
+            '[auth]\ngallery_password = "public-example"\nadmin_password = "public-admin"\n'
+            'session_secret = "public-secret"\n[storage]\nimages_dir = "Gallery"\n'
         )
         with patch.object(Path, "exists", return_value=False), patch.object(Path, "open", return_value=io.BytesIO(content.encode())) as opened:
             config = main.load_config(TEST_DIR / "config.toml")
         opened.assert_called_once_with("rb")
-        self.assertEqual(config["images_dir"], (TEST_DIR / "Downloads").resolve())
+        self.assertEqual(config["images_dir"], (TEST_DIR / "Gallery").resolve())
+        self.assertEqual(config["auth"]["gallery_password"], "")
+        self.assertEqual(config["auth"]["admin_password"], "")
+        self.assertEqual(config["auth"]["session_secret"], "")
 
     def test_invalid_config_fails_with_field_name(self):
         content = (

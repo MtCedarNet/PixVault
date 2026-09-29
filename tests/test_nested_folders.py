@@ -19,14 +19,14 @@ class NestedFoldersTest(unittest.TestCase):
         root.mkdir(parents=True)
         self.addCleanup(shutil.rmtree, root)
         self.root = root
-        self.downloads = root / "Downloads"
-        self.downloads.mkdir()
+        self.images_dir = root / "Gallery"
+        self.images_dir.mkdir()
         self.tags = root / "tags.json"
         self.names = root / "folders.json"
         self.cache = root / "cache.json"
         self.patches = [
             patch.object(main, "ADMIN_PASSWORD", "test-admin-password"),
-            patch.object(main, "DOWNLOADS_DIR", self.downloads),
+            patch.object(main, "IMAGES_DIR", self.images_dir),
             patch.object(main, "TAGS_FILE", self.tags),
             patch.object(main, "FOLDERS_FILE", self.names),
             patch.object(main, "CACHE_FILE", self.cache),
@@ -37,10 +37,10 @@ class NestedFoldersTest(unittest.TestCase):
             self.addCleanup(item.stop)
 
         for relative in ("Trip #1/Day 1/a.jpg", "Trip #1/cover.jpg", "Trip #2/Day 1/b.png"):
-            target = self.downloads / relative
+            target = self.images_dir / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             Image.new("RGB", (4, 4), "red").save(target)
-        (self.downloads / "Empty").mkdir()
+        (self.images_dir / "Empty").mkdir()
         self.tags.write_text(json.dumps({"Trip #1/Day 1": ["travel"]}), encoding="utf-8")
         self.names.write_text(json.dumps({"Trip #1/Day 1": "First day"}), encoding="utf-8")
 
@@ -81,7 +81,7 @@ class NestedFoldersTest(unittest.TestCase):
         self.assertEqual(names["Trip #2"], "Trip #2")
 
         thumb = self.root / "thumbnails/Trip #2/Day 1/b.jpg"
-        result = main.generate_thumbnail((self.downloads / "Trip #2/Day 1/b.png", thumb, (2, 2)))
+        result = main.generate_thumbnail((self.images_dir / "Trip #2/Day 1/b.png", thumb, (2, 2)))
         self.assertEqual(result, "created")
         self.assertTrue(thumb.exists())
 

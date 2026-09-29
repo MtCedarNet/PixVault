@@ -148,7 +148,7 @@ python -m uvicorn main:app --host 127.0.0.1 --port 7979
 
 <div class="section">
 <h2>2) Authentication</h2>
-<p>Set <code class="inline">auth.gallery_password</code>, <code class="inline">auth.admin_password</code>, and <code class="inline">storage.images_dir</code> in <code class="inline">config.toml</code>. The file is ignored by Git.</p>
+<p>Replace the public example passwords and session secret in <code class="inline">config.toml</code>. The example uses <code class="inline">storage.images_dir = "Gallery"</code>: put your photo folders under <code class="inline">Gallery</code> beside <code class="inline">main.py</code>, or change the path to your own image library. The local configuration file is ignored by Git.</p>
 <p class="note">Open PixVault in a browser and sign in with the gallery password. Use the separate admin password on the Admin page for maintenance.</p>
 </div>
 
