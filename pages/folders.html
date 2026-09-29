@@ -358,6 +358,7 @@
   </div>
   <select id="modalSortSelect" class="sort-select" style="flex-shrink:0;background:#333;color:white;border:1px solid #666">
     <option value="">Default</option>
+    <option value="hot">🔥 Hot</option>
     <option value="newest">Newest first</option>
     <option value="oldest">Oldest first</option>
   </select>
@@ -411,12 +412,20 @@ function navigateFolder(path) {
   history.pushState(folderHistoryState({ previousFolderPath }), '', folderUrl(path));
   refreshFolders();
 }
-let modalSort = '';
+function imageSortFromFolderSort(mode) {
+  return ['hot', 'newest', 'oldest'].includes(mode) ? mode : '';
+}
+let modalSort = imageSortFromFolderSort(document.getElementById('folderSortSelect').value);
+document.getElementById('modalSortSelect').value = modalSort;
 let modalAbortController = null;
 document.getElementById('modalSortSelect').addEventListener('change', function() {
   if (modalAbortController) modalAbortController.abort();
   modalLoading = false;
   modalSort = this.value;
+  const folderSort = modalSort || 'default';
+  document.getElementById('folderSortSelect').value = folderSort;
+  localStorage.setItem('pixvault-folder-sort', folderSort);
+  applyFolderSort();
   modalPage = 1;
   modalHasMore = true;
   modalItems = [];
@@ -451,6 +460,8 @@ async function applyFolderSort() {
 }
 document.getElementById('folderSortSelect').addEventListener('change', function() {
   localStorage.setItem('pixvault-folder-sort', this.value);
+  modalSort = imageSortFromFolderSort(this.value);
+  document.getElementById('modalSortSelect').value = modalSort;
   applyFolderSort();
 });
 document.getElementById('viewModeSelect').addEventListener('change', function() {
@@ -660,8 +671,8 @@ async function openFolder(name, displayName, recordHistory = true) {
   modalPage = 1;
   modalHasMore = true;
   modalItems = [];
-  modalSort = '';
-  document.getElementById('modalSortSelect').value = '';
+  modalSort = imageSortFromFolderSort(document.getElementById('folderSortSelect').value);
+  document.getElementById('modalSortSelect').value = modalSort;
   const grid = document.getElementById('modalGrid');
   grid.innerHTML = '<div id="modalSentinel" style="height:40px;display:flex;align-items:center;justify-content:center;grid-column:1/-1"><div class="spinner-border spinner-border-sm text-secondary"></div></div>';
   modalObserver.disconnect();

@@ -36,6 +36,7 @@ window.addEventListener = (name, handler) => windowHandlers.set(name, handler);
 const cookies = new Map([['pixvault-folder-mode', 'tree'], ['pixvault-folder-sort', 'newest']]);
 const cookieWrites = [];
 const storage = new Map([['pixvault-folder-mode', 'flat']]);
+const fetchRequests = [];
 const document = {
   get cookie() { return [...cookies].map(([name, value]) => `${name}=${value}`).join('; '); },
   set cookie(value) {
@@ -86,15 +87,19 @@ const context = vm.createContext({
   },
   document,
   IntersectionObserver: class { disconnect() {} observe() {} },
-  fetch: () => new Promise(() => {}),
+  fetch: url => { fetchRequests.push(url); return new Promise(() => {}); },
 });
 vm.runInContext(script, context);
 const run = expression => vm.runInContext(expression, context);
 assert.equal(getElement('viewModeSelect').value, 'tree');
 assert.equal(getElement('folderSortSelect').value, 'newest');
+assert.equal(getElement('modalSortSelect').value, 'newest');
 assert.equal(cookies.size, 0);
 assert.equal(storage.get('pixvault-folder-mode'), 'tree');
 assert.equal(storage.get('pixvault-folder-sort'), 'newest');
+run("openFolder('Trips', 'Trips', false)");
+assert.ok(fetchRequests.at(-1).includes('/api/folder/Trips?page=1&per_page=20&sort=newest'));
+run('hideModal()');
 const escape = () => documentHandlers.get('keydown')({
   key: 'Escape', defaultPrevented: false, preventDefault() {},
 });
@@ -137,11 +142,28 @@ const sortSelect = getElement('folderSortSelect');
 sortSelect.value = 'za';
 sortSelect.handlers.get('change').call(sortSelect);
 assert.equal(storage.get('pixvault-folder-sort'), 'za');
+assert.equal(getElement('modalSortSelect').value, '');
 const viewSelect = getElement('viewModeSelect');
 viewSelect.value = 'flat';
 viewSelect.handlers.get('change').call(viewSelect);
 assert.equal(storage.get('pixvault-folder-mode'), 'flat');
 assert.equal(storage.get('pixvault-folder-sort'), 'za');
+run("openFolder('Trips', 'Trips', false)");
+assert.equal(getElement('modalSortSelect').value, '');
+const modalSelect = getElement('modalSortSelect');
+modalSelect.value = 'oldest';
+modalSelect.handlers.get('change').call(modalSelect);
+assert.equal(storage.get('pixvault-folder-sort'), 'oldest');
+assert.equal(sortSelect.value, 'oldest');
+assert.ok(fetchRequests.at(-1).includes('/api/folder/Trips?page=1&per_page=20&sort=oldest'));
+sortSelect.value = 'hot';
+sortSelect.handlers.get('change').call(sortSelect);
+assert.equal(modalSelect.value, 'hot');
+assert.equal(storage.get('pixvault-folder-sort'), 'hot');
+run('hideModal()');
+run("openFolder('Trips/2026', '2026', false)");
+assert.equal(modalSelect.value, 'hot');
+assert.ok(fetchRequests.at(-1).includes('/api/folder/Trips/2026?page=1&per_page=20&sort=hot'));
 assert.equal(cookieWrites.length, 2);
 assert.ok(cookieWrites.every(value => value.includes('Max-Age=0') && value.includes('Path=/folders')));
 

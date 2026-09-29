@@ -85,6 +85,22 @@ class NestedFoldersTest(unittest.TestCase):
         self.assertEqual(result, "created")
         self.assertTrue(thumb.exists())
 
+    def test_hot_image_sort_uses_image_scores(self):
+        folder = {
+            "folders": {
+                "Trip": {
+                    "images": ["/media/Trip/a.jpg", "/media/Trip/b.jpg", "/media/Trip/c.jpg"],
+                    "mtimes": [1, 2, 3],
+                    "display_name": "Trip",
+                }
+            }
+        }
+        scores = {"images": {"/media/Trip/a.jpg": 1, "/media/Trip/b.jpg": 3}}
+        with patch.object(main, "get_cache", return_value=folder), patch.object(main, "_load_hotlog", return_value=scores):
+            result = main.get_folder_images("Trip", page=1, per_page=20, sort="hot")
+        self.assertEqual(result["total"], 3)
+        self.assertEqual([item["url"] for item in result["items"]], ["/media/Trip/b.jpg", "/media/Trip/a.jpg", "/media/Trip/c.jpg"])
+
 
 if __name__ == "__main__":
     unittest.main()

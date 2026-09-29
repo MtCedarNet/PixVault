@@ -750,6 +750,11 @@ def get_folder_images(
         paired.sort(key=lambda x: x[1])
     elif sort == "newest":
         paired.sort(key=lambda x: x[1], reverse=True)
+    elif sort == "hot":
+        with _hotlog_lock:
+            hotdata = _load_hotlog()
+        scores = hotdata.get("images", {})
+        paired.sort(key=lambda item: scores.get(item[0], 0), reverse=True)
     total  = len(paired)
     start  = (page - 1) * per_page
     end    = start + per_page
