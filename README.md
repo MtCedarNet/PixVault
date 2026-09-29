@@ -109,3 +109,7 @@ Images belong in subfolders of `images_dir`. After adding images or changing met
 
 Images: `.jpg` `.jpeg` `.png` `.webp` `.gif` `.bmp` `.avif`  
 (Videos are detected server-side but not shown in current UI — easy to add)
+
+## Licence and original author
+
+PixVault was originally created by [ApeDevOne](https://github.com/ApeDevOne/PixVault), who is named as the copyright holder in the [PixVault Licence](LICENSE). Under Section 9, contributors grant ApeDevOne a perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable licence to use, reproduce, create derivative works from, publicly display, and sublicense their contributions, including for commercial purposes. Read the full licence before contributing.
