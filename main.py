@@ -655,6 +655,7 @@ def get_images(
     per_page: int = Query(40, ge=1, le=200),
     tags: Optional[str] = Query(None, description="Comma-separated tags — AND logic"),
     shuffle: bool = Query(False),
+    seed: Optional[int] = Query(None, ge=0, le=0xFFFFFFFF),
     sort: Optional[str] = Query(None, description="oldest, newest"),
 ):
     c = get_cache()
@@ -686,7 +687,10 @@ def get_images(
         items = [x for x in items if x["url"] in scores]
         items.sort(key=lambda x: scores.get(x["url"], 0), reverse=True)
     elif shuffle:
-        random.shuffle(items)
+        if seed is None:
+            random.shuffle(items)
+        else:
+            random.Random(seed).shuffle(items)
 
 
     total = len(items)
