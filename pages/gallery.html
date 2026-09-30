@@ -176,20 +176,19 @@
 
   /* ── Masonry grid ── */
   #grid {
+    display: grid;
     padding: var(--gap);
-    column-gap: var(--gap);
+    gap: var(--gap);
+    align-items: start;
   }
-  /* responsive columns */
-  @media (min-width: 1400px) { #grid { columns: 6; } }
-  @media (min-width: 1100px) and (max-width: 1399px) { #grid { columns: 5; } }
-  @media (min-width: 800px)  and (max-width: 1099px) { #grid { columns: 4; } }
-  @media (min-width: 600px)  and (max-width: 799px)  { #grid { columns: 3; } }
-  @media (min-width: 400px)  and (max-width: 599px)  { #grid { columns: 2; } }
-  @media (max-width: 399px)  { #grid { columns: 1; } }
+  .grid-column {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap);
+  }
 
   .grid-item {
-    break-inside: avoid;
-    margin-bottom: var(--gap);
     position: relative;
     border-radius: var(--radius);
     overflow: hidden;
@@ -199,6 +198,7 @@
   .grid-item img {
     width: 100%;
     height: auto;
+    aspect-ratio: auto 1 / 1;
     display: block;
     border-radius: var(--radius);
     transition: transform .3s ease, filter .3s ease;
@@ -233,8 +233,6 @@
     background-size: 200% 100%;
     animation: shimmer 1.4s infinite;
     border-radius: var(--radius);
-    break-inside: avoid;
-    margin-bottom: var(--gap);
   }
   @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 
@@ -377,6 +375,8 @@ const shuffleSeed = window.crypto?.getRandomValues
 let sortMode = '';
 let totalImages = 0;
 let allItems = [];
+let columns = [];
+let gridVersion = 0;
 
 // ── Filters ────────────────────────────────────────────────────────────────
 const MAX_VISIBLE_TAGS = window.innerWidth < 768 ? 2 : 14;
@@ -463,11 +463,49 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // ── Grid ───────────────────────────────────────────────────────────────────
+function columnCount() {
+  const width = window.innerWidth;
+  return width >= 1400 ? 6 : width >= 1100 ? 5 : width >= 800 ? 4
+    : width >= 600 ? 3 : width >= 400 ? 2 : 1;
+}
+
+function createColumns() {
+  const grid = document.getElementById('grid');
+  const count = columnCount();
+  grid.innerHTML = '';
+  grid.style.gridTemplateColumns = `repeat(${count}, minmax(0, 1fr))`;
+  columns = [];
+  for (let i = 0; i < count; i++) {
+    const column = document.createElement('div');
+    column.className = 'grid-column';
+    grid.appendChild(column);
+    columns.push(column);
+  }
+}
+
+function placeItem(element) {
+  let shortest = columns[0];
+  for (const column of columns.slice(1)) {
+    if (column.offsetHeight < shortest.offsetHeight) shortest = column;
+  }
+  shortest.appendChild(element);
+}
+
+window.addEventListener('resize', () => {
+  if (!columns.length || columnCount() === columns.length) return;
+  const items = [...document.querySelectorAll('#grid .grid-item')]
+    .sort((a, b) => Number(a.dataset.idx) - Number(b.dataset.idx));
+  createColumns();
+  items.forEach(placeItem);
+});
+
 function resetGrid() {
+  gridVersion++;
+  loading = false;
   page = 1;
   hasMore = true;
   allItems = [];
-  document.getElementById('grid').innerHTML = '';
+  createColumns();
   document.getElementById('endMsg').style.display = 'none';
   document.getElementById('sentinel').style.display = 'flex';
   loadMore();
@@ -476,6 +514,7 @@ function resetGrid() {
 async function loadMore() {
   if (loading || !hasMore) return;
   loading = true;
+  const requestVersion = gridVersion;
 
   // Add skeletons
   const skeletons = [];
@@ -484,7 +523,7 @@ async function loadMore() {
     const h = 120 + Math.floor(Math.random() * 200);
     sk.className = 'skeleton';
     sk.style.height = h + 'px';
-    document.getElementById('grid').appendChild(sk);
+    columns[i % columns.length].appendChild(sk);
     skeletons.push(sk);
   }
 
@@ -494,6 +533,7 @@ async function loadMore() {
     const url = `/api/images?page=${page}&per_page=40&shuffle=${shuffle}&seed=${shuffleSeed}${tagParam}${sortParam}`;
     const res = await fetch(url);
     const data = await res.json();
+    if (requestVersion !== gridVersion) return;
 
     // Remove skeletons
     skeletons.forEach(s => s.remove());
@@ -506,11 +546,12 @@ async function loadMore() {
 
     if (data.items.length === 0 && allItems.length === 0) {
       document.getElementById('grid').innerHTML = `
-        <div class="empty-state" style="column-span:all">
+        <div class="empty-state" style="grid-column:1/-1">
           <i class="bi bi-image-alt"></i>
           <p>No images found for <code>${activeTags.size > 0 ? [...activeTags].join(' + ') : 'Archive'}</code></p>
           <small>Check your GALLERY</small>
         </div>`;
+      columns = [];
       document.getElementById('sentinel').style.display = 'none';
       return;
     }
@@ -526,10 +567,12 @@ async function loadMore() {
     }
   } catch(e) {
     skeletons.forEach(s => s.remove());
-    console.error('Load failed', e);
-    toast('Failed to load images — check server');
+    if (requestVersion === gridVersion) {
+      console.error('Load failed', e);
+      toast('Failed to load images — check server');
+    }
   } finally {
-    loading = false;
+    if (requestVersion === gridVersion) loading = false;
   }
 }
 
@@ -557,7 +600,7 @@ function appendItem(item, idx) {
   div.appendChild(img);
   div.appendChild(overlay);
 
-  document.getElementById('grid').appendChild(div);
+  placeItem(div);
 }
 
 // ── Infinite scroll ────────────────────────────────────────────────────────
@@ -641,6 +684,7 @@ document.getElementById('sortSelect').addEventListener('change', function() {
 
 // ── Init ───────────────────────────────────────────────────────────────────
 loadFilters();
+createColumns();
 loadMore();
 async function loadStats() {
   try {
