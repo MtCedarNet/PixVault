@@ -8,3 +8,12 @@ session_secret = "choose-a-separate-long-random-secret"
 [storage]
 # Photo folders go under Gallery by default; an absolute path also works.
 images_dir = "Gallery"
+
+[embeddings]
+# Local image/text search. The server starts on demand when these files exist.
+server_url = "http://127.0.0.1:8081"
+auto_start = true
+executable = "llamacpp/llama-server.exe"
+model = "llamacpp/embeddinggemma-2-Q8_0.gguf"
+mmproj = "llamacpp/mmproj-embeddinggemma-2-BF16.gguf"
+timeout = 120

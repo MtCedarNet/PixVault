@@ -43,7 +43,7 @@ const history = {
   },
 };
 const context = vm.createContext({
-  window, history, console,
+  window, history, console, URL, URLSearchParams,
   KeyboardEvent: class { constructor(type, options) { this.type = type; Object.assign(this, options); } },
   document: {
     getElementById: getElement,

@@ -48,7 +48,9 @@ PixVault denies gallery access until `auth.gallery_password` is set. The login p
 - **Smart filters** — auto-generated from folder names (nature, travel, food, people, art, tech, anime, memes, years…)
 - **Infinite scroll** — lazy loads 40 images at a time as you scroll
 - **Shuffle toggle** — randomize order
+- **Image content search** — describe what you want in Japanese or another language; EmbeddingGemma 2 ranks images by similarity, with tag filters and infinite scroll
 - **Lightbox** — powered by [popupable](https://github.com/ewanhowell5195/popupable), with keyboard and swipe navigation; browser Back closes it
+- **Lightbox actions** — click **Find similar images** to search from the enlarged image's embedding, or click its folder name to open that folder's photos; folder names on gallery thumbnails are also links
 - **Responsive** — 1–6 columns depending on screen width
 
 ### Folders (Page 2)
@@ -59,6 +61,7 @@ PixVault denies gallery access until `auth.gallery_password` is set. The login p
 - **Click folder** → opens scrollable image grid inside a modal
 - **Infinite scroll inside modal**
 - **Lightbox** inside folder view, powered by [popupable](https://github.com/ewanhowell5195/popupable); browser Back closes it
+- **Similar images and folder links** are also available in the folder lightbox
 
 ### Admin (Page 3)
 
@@ -66,14 +69,43 @@ After signing in through the browser, click **Admin** in the navigation bar and 
 
 - Click **Rebuild gallery** after adding or removing images, or after editing folder names or tags. The page shows the last rebuild time and folder and image counts.
 - Click **Generate missing thumbnails** to create thumbnails for new images. Progress and failures appear on the page.
+- Click **Update image embeddings** to create or update the image search DB. Progress, errors, and a stop button appear on the page. **Re-embed all images** recomputes every image.
 - Click **Add missing tags** to add new image folders to `data/tags.json`. Edit the tags in that file, then click **Rebuild gallery**.
 - Click **Generate folder names** to create `data/folders.json`. This overwrites manually edited display names, so the page asks for confirmation. Edit the names if needed, then click **Rebuild gallery**.
+
+## Local image search with EmbeddingGemma 2
+
+Put a recent `llama-server.exe` and its accompanying DLLs in `llamacpp/`, together with:
+
+- `embeddinggemma-2-Q8_0.gguf`
+- `mmproj-embeddinggemma-2-BF16.gguf` (the matching image projector)
+
+PixVault uses these paths by default, so an existing `config.toml` does not need changes. For different paths or ports, copy the `[embeddings]` section from `config.example.toml` into your private `config.toml`. Paths are relative to that configuration file. Restart PixVault after changing settings. Install the updated dependencies with `python -m pip install -r requirements.txt`.
+
+1. Open **Admin**, enter the admin password, and click **Update image embeddings**. The local llama-server starts in the background on `127.0.0.1:8081` when needed. The first pass may take a long time for a large library.
+2. Open **Gallery**, enter a description such as `海辺の夕焼け` or `a cat sleeping on a sofa`, and click **Search images** (or press Enter).
+3. The closest 200 indexed images appear in similarity order. Tag filters also apply. Click **Clear search** to return to normal browsing.
+
+When an image is enlarged, click **Find similar images** to search the library using that image's saved vector. The source image is excluded, and results support tag filters and pagination. The source must already be indexed; otherwise update the DB in Admin. Clicking the folder name beside the button opens that folder's photos directly, including nested folders. These actions work from Gallery and Folders and follow the currently enlarged image when you use Next/Previous.
+
+The DB is `data/embeddings.sqlite3`. Originals are read directly, orientation is corrected, and a temporary RGB JPEG of at most 768 pixels per side is sent to the local server. Animated images use their first frame. Original images and caption files are never changed. Images receive no text prefix; text queries use the model's search instruction. Vectors have 768 dimensions and are L2-normalized for cosine similarity. See the [EmbeddingGemma 2 model card](https://huggingface.co/google/embeddinggemma-2) and the [llama.cpp native embedding API](https://github.com/ggml-org/llama.cpp/tree/master/tools/server#post-embedding-generate-embedding-of-a-given-text).
+
+**Update image embeddings** skips files whose path, size, and modification time are unchanged. It embeds added or changed files, removes deleted entries after a completed pass, and refreshes the gallery cache. Each successful image is saved immediately, so stopped or interrupted jobs resume on the next update. Corrupt images are reported and skipped; server failures stop the job and leave completed work available. After replacing the model/projector or changing the library root, restart PixVault (and any separately managed llama-server), then run Update again; incompatible profiles are kept separate. Use **Re-embed all images** if file content was changed while preserving size and timestamp, or after changing an external server's projector/pooling settings.
+
+Images stay on this computer: the configured embedding URL must use `http://127.0.0.1:PORT` or `http://localhost:PORT`. An external server on that address can be used with `auto_start = false`; start it with the same model and projector:
+
+```powershell
+.\llamacpp\llama-server.exe -m .\llamacpp\embeddinggemma-2-Q8_0.gguf --mmproj .\llamacpp\mmproj-embeddinggemma-2-BF16.gguf --embedding --pooling mean --host 127.0.0.1 --port 8081 -c 8192 -b 8192 -ub 8192 -np 1
+```
+
+The integration uses llama.cpp's native `/embedding` API with `prompt_string`, `multimodal_data`, and the current media marker from `/props`. Older builds without multimodal embedding support need updating. The local build used to verify this integration is **b11515 / 3d65c90d0**. Startup and inference errors are shown in Admin; automatically started server logs go to `data/embedding-server.log`. Run one PixVault worker when using the built-in background indexing and server management. The managed llama-server stops when its owning PixVault process exits normally.
 
 ## Directory Structure
 
 ```
 PixVault/
 ├── main.py              # FastAPI app
+├── embeddings.py        # Local llama.cpp client, SQLite index, image search
 ├── config.example.toml  # Public configuration template
 ├── config.toml          # Local settings; ignored by Git
 ├── requirements.txt
@@ -81,7 +113,8 @@ PixVault/
 │   └── Trips/
 │       └── 2026/
 │           └── photo.jpg
-├── data/                # Generated cache, tags, and folder names
+├── data/                # Generated cache, tags, folder names, and embeddings.sqlite3
+├── llamacpp/            # Local llama-server, DLLs, model and mmproj; ignored by Git
 ├── pages/
 │   ├── gallery.html     # Gallery
 │   ├── folders.html     # Folders

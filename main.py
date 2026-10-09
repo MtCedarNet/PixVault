@@ -12,7 +12,8 @@ import threading
 import tomllib
 from pathlib import Path
 from typing import Optional
-from urllib.parse import quote
+from urllib.parse import quote, unquote
+from embeddings import EmbeddingConfig, EmbeddingError, EmbeddingIndex, LlamaEmbeddingClient
 from fastapi import FastAPI, Query, HTTPException, Request, Response, Cookie, Header, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
@@ -55,7 +56,8 @@ def load_config(path: Path = CONFIG_FILE) -> dict:
     images_path = Path(images_dir).expanduser()
     if not images_path.is_absolute():
         images_path = source.parent / images_path
-    return {"auth": auth, "images_dir": images_path.resolve()}
+    embedding_config = EmbeddingConfig.from_dict(config.get("embeddings", {}), source.parent)
+    return {"auth": auth, "images_dir": images_path.resolve(), "embeddings": embedding_config}
 
 
 CONFIG = load_config()
@@ -67,6 +69,8 @@ _SESSION_COOKIE = "gallery_session"
 IMAGES_DIR = CONFIG["images_dir"]
 DATA_DIR = Path(__file__).parent / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+_embedding_client = LlamaEmbeddingClient(CONFIG["embeddings"], DATA_DIR)
+_embedding_index = EmbeddingIndex(DATA_DIR / "embeddings.sqlite3", IMAGES_DIR, _embedding_client)
 CACHE_FILE    = DATA_DIR / "cache.json" # Cache file with image path,fodler details and tags. Used while serving on front-end. Created at first star and can be regenerated anytime with generate api endpoint.
 TAGS_FILE     = DATA_DIR / "tags.json" # Tags - Used for filters. Can be also used with cache by doing some changes. by default tags are added to cache and behaviour can be changed.
 FOLDERS_FILE  = DATA_DIR / "folders.json"
@@ -95,6 +99,7 @@ class OptionalStaticFiles(StaticFiles):
 app.mount("/thumbs", StaticFiles(directory=str(THUMBNAILS_DIR)), name="thumbs")
 app.mount("/media", OptionalStaticFiles(directory=str(IMAGES_DIR), check_dir=False), name="media")
 PAGES_DIR = Path(__file__).parent / "pages"
+app.mount("/assets", StaticFiles(directory=str(PAGES_DIR / "assets")), name="assets")
 
 
 def _session_key() -> bytes:
@@ -394,11 +399,11 @@ _cache: dict = {}
 _cache_lock = threading.Lock()
 
 
-def _image_folders():
+def _image_folders(onerror=None):
     """Yield directories and their immediate images, at any depth below the configured image directory."""
     if not IMAGES_DIR.exists():
         return
-    for root, dirnames, filenames in os.walk(IMAGES_DIR):
+    for root, dirnames, filenames in os.walk(IMAGES_DIR, onerror=onerror):
         folder = Path(root)
         dirnames[:] = sorted(name for name in dirnames if not (folder / name).is_symlink())
         images = [folder / name for name in sorted(filenames)
@@ -523,6 +528,85 @@ def get_cache() -> dict:
 def _require_admin_key(key: str | None):
     if not ADMIN_PASSWORD or not isinstance(key, str) or not hmac.compare_digest(key.encode(), ADMIN_PASSWORD.encode()):
         raise HTTPException(status_code=403, detail="Invalid admin key")
+
+
+@app.get("/api/embeddings/status")
+def embedding_status():
+    return _embedding_index.status()
+
+
+def _embedding_paths():
+    if not IMAGES_DIR.is_dir():
+        raise EmbeddingError("Image library folder not found. Check storage.images_dir before updating embeddings.")
+    def scan_error(exc):
+        raise EmbeddingError("Cannot scan the image library. Check folder permissions before updating embeddings.") from exc
+    for _, images in _image_folders(onerror=scan_error):
+        yield from images
+
+
+def _refresh_embedding_gallery():
+    global _cache
+    with _cache_lock:
+        _cache = _build_cache()
+        _save_cache(_cache)
+
+
+@app.post("/api/admin/embeddings/generate")
+def admin_generate_embeddings(force: bool = False, x_admin_key: str | None = Header(default=None)):
+    _require_admin_key(x_admin_key)
+    return _embedding_index.start(_embedding_paths, force=force, on_complete=_refresh_embedding_gallery)
+
+
+@app.post("/api/admin/embeddings/cancel")
+def admin_cancel_embeddings(x_admin_key: str | None = Header(default=None)):
+    _require_admin_key(x_admin_key)
+    return _embedding_index.cancel()
+
+
+@app.get("/api/search")
+def search_images(q: str = Query(..., min_length=1, max_length=1000),
+                  page: int = Query(1, ge=1), per_page: int = Query(40, ge=1, le=200),
+                  limit: int = Query(200, ge=1, le=1000), tags: Optional[str] = Query(None)):
+    query = q.strip()
+    if not query:
+        raise HTTPException(status_code=422, detail="Enter a search description.")
+    return _search_results(query, None, page, per_page, limit, tags)
+
+
+@app.get("/api/search/similar")
+def search_similar_images(url: str = Query(..., min_length=1, max_length=4000),
+                          page: int = Query(1, ge=1), per_page: int = Query(40, ge=1, le=200),
+                          limit: int = Query(200, ge=1, le=1000), tags: Optional[str] = Query(None)):
+    # Accept only an existing library image, never a caller-supplied file or remote URL.
+    source = next((item for item in get_cache()["all_images"] if item["url"] == url), None)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source image not found in the library.")
+    path = unquote(source["url"].removeprefix("/media/"))
+    if not (IMAGES_DIR / path).is_file() or not (IMAGES_DIR / path).resolve().is_relative_to(IMAGES_DIR.resolve()):
+        raise HTTPException(status_code=404, detail="Source image not found in the library.")
+    return _search_results(None, path, page, per_page, limit, tags)
+
+
+def _search_results(query, source_path, page, per_page, limit, tags):
+    cache = get_cache()
+    tag_list = [tag.strip() for tag in (tags or "").split(",") if tag.strip()]
+    allowed_folders = None
+    for tag in tag_list:
+        folders = set(cache["tag_index"].get(tag, []))
+        allowed_folders = folders if allowed_folders is None else allowed_folders & folders
+    items = {unquote(item["url"].removeprefix("/media/")): item for item in cache["all_images"]
+             if allowed_folders is None or item["folder"] in allowed_folders}
+    try:
+        ranked = _embedding_index.rank(query, items, limit, source_path=source_path)
+    except EmbeddingError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    # Avoid showing deleted files if the library was edited since the last update.
+    ranked = [(path, score) for path, score in ranked if (IMAGES_DIR / path).is_file()
+              and (IMAGES_DIR / path).resolve().is_relative_to(IMAGES_DIR.resolve())]
+    start = (page - 1) * per_page
+    return {"total": len(ranked), "page": page, "per_page": per_page,
+            "has_more": start + per_page < len(ranked),
+            "items": [{**items[path], "score": score} for path, score in ranked[start:start + per_page]]}
 
 
 @app.post("/api/admin/cache/rebuild")
@@ -989,3 +1073,9 @@ def debug_headers(request: Request, key: str):
 @app.on_event("startup")
 async def startup():
     get_cache()
+
+
+@app.on_event("shutdown")
+def shutdown_embeddings():
+    _embedding_index.cancel()
+    _embedding_client.close()

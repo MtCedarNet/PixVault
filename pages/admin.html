@@ -76,6 +76,20 @@
       <p class="small" id="thumbProgress" aria-live="polite">Not started</p>
     </section>
     <section class="card full">
+      <h2>Image search embeddings</h2>
+      <p>Build a local search database from image content using EmbeddingGemma 2. The local llama-server starts automatically when needed.</p>
+      <p id="embeddingStatus">Loading status…</p>
+      <div class="actions">
+        <button id="embeddingButton" type="button">Update image embeddings</button>
+        <button id="embeddingRebuildButton" class="secondary" type="button">Re-embed all images</button>
+        <button id="embeddingCancelButton" class="secondary" type="button" disabled>Stop after current image</button>
+      </div>
+      <div class="bar" role="progressbar" aria-label="Image embedding progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="embeddingProgressBar"><div id="embeddingProgressFill"></div></div>
+      <p class="small" id="embeddingProgress" aria-live="polite">Not started</p>
+      <p class="small" id="embeddingError" role="status"></p>
+      <p class="small">Update skips unchanged images and resumes interrupted jobs. New and changed images are embedded, deleted entries are removed, and the gallery cache is refreshed. Then use Search images in Gallery.</p>
+    </section>
+    <section class="card full">
       <h2>Folder information</h2>
       <p>Adding tags includes folders not yet listed. Generating folder names overwrites manual edits in folders.json.</p>
       <div class="actions">
@@ -90,8 +104,9 @@
 <script>
 const keyInput = document.getElementById('adminKey');
 const message = document.getElementById('message');
-const buttons = ['rebuildButton', 'thumbButton', 'tagsButton', 'foldersButton'].map(id => document.getElementById(id));
+const buttons = ['rebuildButton', 'thumbButton', 'tagsButton', 'foldersButton', 'embeddingButton', 'embeddingRebuildButton'].map(id => document.getElementById(id));
 let busy = false;
+let embeddingsRunning = false;
 let thumbsRunning = false;
 let wasDone = false;
 
@@ -101,7 +116,9 @@ function setMessage(value, error = false) {
 }
 
 function updateButtons() {
-  buttons.forEach(button => button.disabled = busy || (button.id === 'thumbButton' && thumbsRunning));
+  buttons.forEach(button => button.disabled = busy || (button.id === 'thumbButton' && thumbsRunning)
+    || (button.id.startsWith('embedding') && embeddingsRunning));
+  document.getElementById('embeddingCancelButton').disabled = busy || !embeddingsRunning;
 }
 
 async function readJson(url, options) {
@@ -168,6 +185,40 @@ document.getElementById('rebuildButton').onclick = () => runAction('/api/admin/c
   `Gallery rebuilt: ${result.folders} folders, ${result.images} images.`);
 document.getElementById('thumbButton').onclick = () => runAction('/api/admin/thumbnails/generate', result =>
   result.status === 'already_running' ? 'Thumbnail generation is already running.' : `Thumbnail generation started for ${result.total} images.`);
+document.getElementById('embeddingButton').onclick = () => runAction('/api/admin/embeddings/generate', result => {
+  embeddingsRunning = true;
+  refreshEmbeddings();
+  return result.status === 'already_running' ? 'Image embedding is already running.' : 'Image embedding started. Progress appears below.';
+});
+document.getElementById('embeddingRebuildButton').onclick = () => {
+  if (confirm('Recompute embeddings for every image? This may take a long time.')) {
+    runAction('/api/admin/embeddings/generate?force=true', result => {
+      embeddingsRunning = true;
+      refreshEmbeddings();
+      return result.status === 'already_running' ? 'Image embedding is already running.' : 'Re-embedding started.';
+    });
+  }
+};
+document.getElementById('embeddingCancelButton').onclick = () => runAction('/api/admin/embeddings/cancel', () =>
+  'Stopping after the current image. Completed embeddings are saved.');
+
+async function refreshEmbeddings() {
+  try {
+    const data = await readJson('/api/embeddings/status');
+    embeddingsRunning = data.running;
+    document.getElementById('embeddingStatus').textContent = `${data.indexed.toLocaleString()} images stored in the local DB.`;
+    const percent = data.total ? Math.round(data.processed / data.total * 100) : 0;
+    document.getElementById('embeddingProgressFill').style.width = `${percent}%`;
+    document.getElementById('embeddingProgressBar').setAttribute('aria-valuenow', percent);
+    const state = data.running ? (data.total ? 'Working' : 'Preparing model and library')
+      : data.cancelled ? 'Stopped' : data.done ? (data.error ? 'Finished with errors' : 'Finished') : 'Not started';
+    document.getElementById('embeddingProgress').textContent = `${state}: ${data.processed}/${data.total} · embedded ${data.created} · skipped ${data.skipped} · failed ${data.failed} · removed ${data.removed}${data.current ? '\n' + data.current : ''}`;
+    document.getElementById('embeddingError').textContent = data.error;
+    updateButtons();
+  } catch (error) {
+    document.getElementById('embeddingError').textContent = error.message;
+  }
+}
 document.getElementById('tagsButton').onclick = () => runAction('/api/admin/tags/generate', result =>
   `Tags updated for ${result.new_folders_added} new folders. Rebuild the gallery to see changes.`);
 document.getElementById('foldersButton').onclick = () => {
@@ -179,6 +230,8 @@ document.getElementById('foldersButton').onclick = () => {
 
 refreshStatus();
 refreshProgress();
+refreshEmbeddings();
+setInterval(refreshEmbeddings, 2000);
 setInterval(() => { if (thumbsRunning) refreshProgress(); }, 2000);
 setInterval(() => { if (!thumbsRunning) refreshProgress(); }, 10000);
 </script>

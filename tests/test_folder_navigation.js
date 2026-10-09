@@ -168,3 +168,11 @@ assert.equal(cookieWrites.length, 2);
 assert.ok(cookieWrites.every(value => value.includes('Max-Age=0') && value.includes('Path=/folders')));
 
 console.log('Folder navigation and global local-storage preferences passed');
+
+run("hideModal(); viewMode = 'tree'; currentPath = 'Trips/2026'; allFolders = [{ name:'Trips/2026', display_name:'Trip photos', count:3 }]; renderBreadcrumbs()");
+const viewPhotos = getElement('breadcrumbs').children.find(child => child.textContent === 'View photos');
+assert.ok(viewPhotos, 'A directly linked folder can reopen its photos after closing the modal');
+viewPhotos.onclick();
+assert.equal(run('modalFolder'), 'Trips/2026');
+assert.ok(fetchRequests.at(-1).includes('/api/folder/Trips/2026?'));
+console.log('Directly linked image folders can reopen photos from breadcrumbs');

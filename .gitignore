@@ -3,9 +3,13 @@
 /data/
 /Gallery/
 /thumbnails/
+/Gallary/
 
 # Local tools and generated files
 /venv/
+/llamacpp/
+/log/
+/nssm.exe
 __pycache__/
 *.py[cod]
 .pytest_cache/

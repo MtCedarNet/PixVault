@@ -158,6 +158,15 @@ python -m uvicorn main:app --host 127.0.0.1 --port 7979
 </div>
 
 <div class="section">
+<h2>Image Content Search</h2>
+<p>Place a recent llama-server and its DLLs, <code class="inline">embeddinggemma-2-Q8_0.gguf</code>, and <code class="inline">mmproj-embeddinggemma-2-BF16.gguf</code> under <code class="inline">llamacpp/</code>. Install the updated requirements and restart PixVault.</p>
+<p>In <strong>Admin</strong>, enter the admin password and click <strong>Update image embeddings</strong>. The local server starts automatically, and the page shows progress and a stop button. Completed images are saved immediately; the next update resumes and skips unchanged files.</p>
+<p>In <strong>Gallery</strong>, type a description such as <code class="inline">海辺の夕焼け</code> into <strong>Search images</strong>. Results show the closest 200 indexed images by similarity, and tag filters also apply. <strong>Clear search</strong> returns to ordinary browsing.</p>
+<p>In the enlarged image view, click <strong>Find similar images</strong> to search using that image's stored embedding; the source image is excluded. Click the folder name beside it to open that folder's photos. Both actions work in Gallery and Folders, and gallery thumbnail folder names are also clickable.</p>
+<p class="note">The database is stored in <code class="inline">data/embeddings.sqlite3</code>. Original images stay unchanged, and image data is sent only to the local server. Use <strong>Re-embed all images</strong> to recompute everything. Custom paths and server settings belong in the optional <code class="inline">[embeddings]</code> section of your private configuration; see README for details.</p>
+</div>
+
+<div class="section">
 <h2>📁 Folder Metadata</h2>
 <p>Folders may be nested at any depth under <code class="inline">storage.images_dir</code>. On the Folders page, switch between <strong>All folders</strong> and <strong>Browse folders</strong>; breadcrumbs, browser Back, and Esc return to parent directories. A parent with its own images has a View photos button.</p>
 <p class="note">Use paths relative to that image directory as keys in <code class="inline">data/folders.json</code> and <code class="inline">data/tags.json</code>, such as <code class="inline">Trips/2026</code>.</p>

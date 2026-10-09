@@ -9,6 +9,7 @@
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/popupable@1.11.0/dist/popupable.min.css" rel="stylesheet">
+<link href="/assets/lightbox-actions.css" rel="stylesheet">
 <style>
   :root {
     --bg:        #0a0a0f;
@@ -216,8 +217,9 @@
     display: flex; align-items: center; gap: .4rem;
     pointer-events: none;
   }
-  .grid-item:hover .overlay { opacity: 1; }
+  .grid-item:hover .overlay, .grid-item:focus-within .overlay { opacity: 1; }
   .overlay .folder-tag {
+    pointer-events: auto;
     font-size: .68rem;
     font-family: 'Space Mono', monospace;
     color: rgba(255,255,255,.7);
@@ -226,6 +228,7 @@
     text-overflow: ellipsis;
     max-width: 100%;
   }
+  @media (hover:none) { .grid-item .overlay { opacity:1; } }
 
   /* skeleton */
   .skeleton {
@@ -266,6 +269,15 @@
   }
   @keyframes toastIn  { from { opacity:0; transform: translateY(8px); } to { opacity:1; transform:none; } }
   @keyframes toastOut { to { opacity:0; } }
+</style>
+<style>
+  .semantic-search { display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; padding:.8rem 1rem 0; }
+  .semantic-search input { flex:1; min-width:180px; padding:.6rem .8rem; border:1px solid var(--border); border-radius:8px; background:var(--surface); color:var(--text); }
+  .semantic-search button { padding:.6rem .9rem; border:1px solid var(--border); border-radius:8px; background:var(--surface); color:var(--text); }
+  .semantic-search button[type="submit"] { background:var(--accent); color:white; }
+  .semantic-search input:focus { outline:2px solid var(--accent); }
+  .semantic-search .search-hint { flex-basis:100%; color:var(--muted); font-size:.8rem; }
+  .controls-bar :disabled { opacity:.45; cursor:default; }
 </style>
 </head>
 <body>
@@ -328,6 +340,12 @@
 
 </div>
 <!-- Controls bar -->
+<form id="semanticSearchForm" class="semantic-search" role="search">
+  <input id="semanticSearchInput" type="search" maxlength="1000" aria-label="Describe images to find" placeholder="Describe images, e.g. 海辺の夕焼け" autocomplete="off">
+  <button type="submit">Search images</button>
+  <button id="clearSemanticSearch" type="button" hidden>Clear search</button>
+  <span id="searchHint" class="search-hint" aria-live="polite">Search by image content. Create the image embeddings in Admin first.</span>
+</form>
 <div class="controls-bar">
   <button class="btn-icon active" id="btnShuffle" title="Shuffle">
     <i class="bi bi-shuffle"></i>
@@ -361,6 +379,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script type="module" src="https://cdn.jsdelivr.net/npm/popupable@1.11.0/dist/popupable.min.js"></script>
+<script src="/assets/lightbox-actions.js"></script>
 <script>
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -377,6 +396,8 @@ let totalImages = 0;
 let allItems = [];
 let columns = [];
 let gridVersion = 0;
+let searchQuery = '';
+let similarImageUrl = new URLSearchParams(window.location.search).get('similar') || '';
 
 // ── Filters ────────────────────────────────────────────────────────────────
 const MAX_VISIBLE_TAGS = window.innerWidth < 768 ? 2 : 14;
@@ -530,10 +551,15 @@ async function loadMore() {
   try {
     const tagParam = activeTags.size > 0 ? '&tags=' + encodeURIComponent([...activeTags].join(',')) : '';
     const sortParam = sortMode ? `&sort=${sortMode}` : '';
-    const url = `/api/images?page=${page}&per_page=40&shuffle=${shuffle}&seed=${shuffleSeed}${tagParam}${sortParam}`;
+    const url = similarImageUrl
+      ? `/api/search/similar?url=${encodeURIComponent(similarImageUrl)}&page=${page}&per_page=40${tagParam}`
+      : searchQuery
+      ? `/api/search?q=${encodeURIComponent(searchQuery)}&page=${page}&per_page=40${tagParam}`
+      : `/api/images?page=${page}&per_page=40&shuffle=${shuffle}&seed=${shuffleSeed}${tagParam}${sortParam}`;
     const res = await fetch(url);
     const data = await res.json();
     if (requestVersion !== gridVersion) return;
+    if (res.ok === false) throw new Error(data.detail || `HTTP ${res.status}`);
 
     // Remove skeletons
     skeletons.forEach(s => s.remove());
@@ -542,14 +568,14 @@ async function loadMore() {
     hasMore = data.has_more;
     page++;
 
-    document.getElementById('countLabel').textContent = `${totalImages.toLocaleString()} images`;
+    document.getElementById('countLabel').textContent = `${totalImages.toLocaleString()} ${searchQuery || similarImageUrl ? 'closest matches' : 'images'}`;
 
     if (data.items.length === 0 && allItems.length === 0) {
       document.getElementById('grid').innerHTML = `
         <div class="empty-state" style="grid-column:1/-1">
           <i class="bi bi-image-alt"></i>
-          <p>No images found for <code>${activeTags.size > 0 ? [...activeTags].join(' + ') : 'Archive'}</code></p>
-          <small>Check your GALLERY</small>
+          <p>No images found.</p>
+          <small>Try another description or filter, or update the library in Admin.</small>
         </div>`;
       columns = [];
       document.getElementById('sentinel').style.display = 'none';
@@ -569,7 +595,11 @@ async function loadMore() {
     skeletons.forEach(s => s.remove());
     if (requestVersion === gridVersion) {
       console.error('Load failed', e);
-      toast('Failed to load images — check server');
+      hasMore = false;
+      document.getElementById('sentinel').style.display = 'none';
+      document.getElementById('countLabel').textContent = 'Load failed';
+      if (searchQuery || similarImageUrl) document.getElementById('searchHint').textContent = e.message;
+      toast(searchQuery || similarImageUrl ? e.message : 'Failed to load images — check server');
     }
   } finally {
     if (requestVersion === gridVersion) loading = false;
@@ -595,9 +625,14 @@ function appendItem(item, idx) {
 
   const overlay = document.createElement('div');
   overlay.className = 'overlay';
-  overlay.innerHTML = `<span class="folder-tag"><i class="bi bi-folder2 me-1"></i>${item.display_name || item.folder}</span>`;
+  const folderLink = document.createElement('a');
+  folderLink.className = 'folder-tag';
+  folderLink.href = '/folders?folder=' + encodeURIComponent(item.folder) + '&photos=1';
+  folderLink.textContent = item.display_name || item.folder;
+  overlay.appendChild(folderLink);
 
   div.appendChild(img);
+  div.appendChild(window.pixvaultLightboxContent(img, item));
   div.appendChild(overlay);
 
   placeItem(div);
@@ -610,6 +645,31 @@ const observer = new IntersectionObserver(entries => {
 observer.observe(document.getElementById('sentinel'));
 
 // ── Controls ───────────────────────────────────────────────────────────────
+function setSearch(query) {
+  similarImageUrl = '';
+  const url = new URL(window.location.href);
+  url.searchParams.delete('similar');
+  history.replaceState(history.state, '', url);
+  searchQuery = query.trim();
+  document.getElementById('clearSemanticSearch').hidden = !searchQuery;
+  document.getElementById('btnShuffle').disabled = Boolean(searchQuery);
+  document.getElementById('sortSelect').disabled = Boolean(searchQuery);
+  document.getElementById('searchHint').textContent = searchQuery
+    ? 'Showing up to 200 images by similarity. Tag filters also apply.'
+    : 'Search by image content. Create the image embeddings in Admin first.';
+  document.getElementById('countLabel').textContent = 'Loading…';
+  resetGrid();
+}
+
+document.getElementById('semanticSearchForm').addEventListener('submit', event => {
+  event.preventDefault();
+  setSearch(document.getElementById('semanticSearchInput').value);
+});
+document.getElementById('clearSemanticSearch').onclick = () => {
+  document.getElementById('semanticSearchInput').value = '';
+  setSearch('');
+};
+
 document.getElementById('btnShuffle').onclick = function() {
   shuffle = !shuffle;
   sortMode = '';
@@ -684,6 +744,12 @@ document.getElementById('sortSelect').addEventListener('change', function() {
 
 // ── Init ───────────────────────────────────────────────────────────────────
 loadFilters();
+if (similarImageUrl) {
+  document.getElementById('clearSemanticSearch').hidden = false;
+  document.getElementById('btnShuffle').disabled = true;
+  document.getElementById('sortSelect').disabled = true;
+  document.getElementById('searchHint').textContent = 'Showing up to 200 similar images, excluding the source image. Tag filters also apply.';
+}
 createColumns();
 loadMore();
 async function loadStats() {
