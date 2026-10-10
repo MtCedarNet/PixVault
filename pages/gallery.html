@@ -8,7 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
-<link href="https://cdn.jsdelivr.net/npm/popupable@1.11.0/dist/popupable.min.css" rel="stylesheet">
+<link href="/assets/vendor/popupable/popupable.css" rel="stylesheet">
 <link href="/assets/lightbox-actions.css" rel="stylesheet">
 <style>
   :root {
@@ -206,6 +206,7 @@
     will-change: transform;
   }
   .grid-item:hover img { transform: scale(1.03); filter: brightness(.85); }
+  .grid-item.lightbox-selected { outline: 2px solid var(--accent); outline-offset: 2px; }
   .grid-item .overlay {
     position: absolute;
     bottom: 0; left: 0; right: 0;
@@ -366,7 +367,7 @@
 </div>
 
 <!-- Masonry grid -->
-<div id="grid" data-popupable-group="gallery" data-popupable-looping data-popupable-counter></div>
+<div id="grid" data-popupable-group="gallery" data-popupable-counter></div>
 
 <!-- Infinite scroll sentinel -->
 <div id="sentinel">
@@ -378,7 +379,7 @@
 <div id="toast-wrap"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/npm/popupable@1.11.0/dist/popupable.min.js"></script>
+<script type="module" src="/assets/vendor/popupable/popupable.js"></script>
 <script src="/assets/lightbox-actions.js"></script>
 <script>
 
@@ -394,6 +395,7 @@ const shuffleSeed = window.crypto?.getRandomValues
 let sortMode = '';
 let totalImages = 0;
 let allItems = [];
+let gallerySources = [];
 let columns = [];
 let gridVersion = 0;
 let searchQuery = '';
@@ -521,11 +523,13 @@ window.addEventListener('resize', () => {
 });
 
 function resetGrid() {
+  if (activePopupSource) dismissPopup(true);
   gridVersion++;
   loading = false;
   page = 1;
   hasMore = true;
   allItems = [];
+  gallerySources = [];
   createColumns();
   document.getElementById('endMsg').style.display = 'none';
   document.getElementById('sentinel').style.display = 'flex';
@@ -586,6 +590,7 @@ async function loadMore() {
       allItems.push(item);
       appendItem(item, allItems.length - 1);
     });
+    activePopupElement?.popupableAppendImages(gallerySources);
 
     if (!hasMore) {
       document.getElementById('sentinel').style.display = 'none';
@@ -610,6 +615,7 @@ function appendItem(item, idx) {
   const div = document.createElement('div');
   div.className = 'grid-item fade-in';
   div.dataset.idx = idx;
+  div.tabIndex = -1;
 
   const img = document.createElement('img');
   //img.src = item.url;
@@ -619,6 +625,14 @@ function appendItem(item, idx) {
   img.dataset.popupableThumb = item.thumb_url || item.url;
   img.dataset.popupableDescription = item.display_name || item.folder;
   img.dataset.popupableGroup = 'gallery';
+  img.dataset.popupableIndex = idx;
+  img.tabIndex = 0;
+  img.addEventListener('keydown', event => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      window.popupableOpen(img);
+    }
+  });
   img.alt = item.folder;
   img.loading = 'lazy';
   img.decoding = 'async';
@@ -636,6 +650,7 @@ function appendItem(item, idx) {
   div.appendChild(overlay);
 
   placeItem(div);
+  gallerySources.push(img);
 }
 
 // ── Infinite scroll ────────────────────────────────────────────────────────
@@ -688,8 +703,28 @@ let activePopupElement = null;
 let lastPopupSource = null;
 let popupClosingFromHistory = false;
 let popupRestoringFromHistory = false;
+let popupScrollSourceToRestore = null;
+const LIGHTBOX_PREFETCH_REMAINING = 8;
 
-function dismissPopup() {
+function followPopupSource(source) {
+  lastPopupSource?.closest('.grid-item')?.classList.remove('lightbox-selected');
+  activePopupSource = source;
+  lastPopupSource = source;
+  const card = source.closest('.grid-item');
+  card?.classList.add('lightbox-selected');
+  card?.focus({ preventScroll: true });
+  card?.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+  const idx = Number(card?.dataset.idx);
+  const item = allItems[idx];
+  if (item) fetch('/api/hot/image?url=' + encodeURIComponent(item.url), { method: 'POST' });
+  if (allItems.length - idx - 1 <= LIGHTBOX_PREFETCH_REMAINING) loadMore();
+}
+
+function dismissPopup(immediate = false) {
+  if (activePopupElement?.popupableClose) {
+    activePopupElement.popupableClose(immediate);
+    return;
+  }
   (activePopupElement || document).dispatchEvent(new KeyboardEvent('keydown', {
     key: 'Escape', code: 'Escape', bubbles: true, cancelable: true,
   }));
@@ -697,31 +732,46 @@ function dismissPopup() {
 
 document.addEventListener('popupable:open', e => {
   const wasOpen = Boolean(activePopupSource);
-  activePopupSource = e.target;
   activePopupElement = e.detail.popup;
-  lastPopupSource = e.target;
   if (!wasOpen && !popupRestoringFromHistory) {
     history.pushState({ ...(history.state || {}), pixvaultGalleryPopup: true }, '', window.location.href);
   }
   popupRestoringFromHistory = false;
-  const idx = Number(e.target.closest('.grid-item')?.dataset.idx);
-  const item = allItems[idx];
-  if (item) fetch('/api/hot/image?url=' + encodeURIComponent(item.url), { method: 'POST' });
+  followPopupSource(e.target);
+});
+document.addEventListener('popupable:switch', e => {
+  if (e.detail.popup !== activePopupElement) return;
+  followPopupSource(e.target);
 });
 document.addEventListener('popupable:close', () => {
+  const source = activePopupSource;
+  activePopupSource?.focus({ preventScroll: true });
   activePopupSource = null;
   activePopupElement = null;
   if (popupClosingFromHistory) { popupClosingFromHistory = false; return; }
-  if (history.state?.pixvaultGalleryPopup) history.back();
+  if (history.state?.pixvaultGalleryPopup) {
+    popupScrollSourceToRestore = source;
+    history.back();
+  }
 });
 window.addEventListener('popstate', e => {
+  let scrollSource = popupScrollSourceToRestore;
+  popupScrollSourceToRestore = null;
   if (activePopupSource && !e.state?.pixvaultGalleryPopup) {
+    scrollSource = activePopupSource;
     popupClosingFromHistory = true;
     dismissPopup();
   } else if (!activePopupSource && e.state?.pixvaultGalleryPopup && lastPopupSource?.isConnected) {
     popupRestoringFromHistory = true;
-    lastPopupSource.click();
-    if (!activePopupSource) popupRestoringFromHistory = false;
+    window.popupableOpen(lastPopupSource);
+  }
+  if (scrollSource) {
+    // Native history restores the opening scroll position after popstate.
+    // Reposition after that restoration, using the final selected image.
+    window.requestAnimationFrame(() => {
+      if (!scrollSource.isConnected || (activePopupSource && activePopupSource !== scrollSource)) return;
+      scrollSource.closest('.grid-item')?.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+    });
   }
 });
 

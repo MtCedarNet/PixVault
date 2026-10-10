@@ -50,6 +50,7 @@ PixVault denies gallery access until `auth.gallery_password` is set. The login p
 - **Shuffle toggle** — randomize order
 - **Image content search** — describe what you want in Japanese or another language; EmbeddingGemma 2 ranks images by similarity, with tag filters and infinite scroll
 - **Lightbox** — powered by [popupable](https://github.com/ewanhowell5195/popupable), with keyboard and swipe navigation; browser Back closes it
+- **Gallery navigation** — enlarged images follow the order images were packed into the gallery. The selected thumbnail stays highlighted and scrolls into view; within eight images of the loaded end, the next 40 images load and join the open lightbox. Navigation stops at the first and last available image.
 - **Lightbox actions** — click **Find similar images** to search from the enlarged image's embedding, or click its folder name to open that folder's photos; folder names on gallery thumbnails are also links
 - **Responsive** — 1–6 columns depending on screen width
 
@@ -61,6 +62,7 @@ PixVault denies gallery access until `auth.gallery_password` is set. The login p
 - **Click folder** → opens scrollable image grid inside a modal
 - **Infinite scroll inside modal**
 - **Lightbox** inside folder view, powered by [popupable](https://github.com/ewanhowell5195/popupable); browser Back closes it
+- **Image navigation** follows the folder's current sort order, highlights and scrolls to the selected thumbnail, and loads the next 20 images within eight images of the loaded end. Closing the lightbox keeps the last viewed image in view; browser Forward can reopen it while the folder remains open.
 - **Similar images and folder links** are also available in the folder lightbox
 
 ### Admin (Page 3)

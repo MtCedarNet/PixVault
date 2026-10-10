@@ -21,6 +21,7 @@ const getElement = id => {
   return elements.get(id);
 };
 const window = { innerWidth: 1200, location: new URL('http://localhost/') };
+window.requestAnimationFrame = callback => callback();
 window.addEventListener = (name, handler) => windowHandlers.set(name, handler);
 const entries = [{ state: null, url: window.location.href }];
 let index = 0;
@@ -62,9 +63,11 @@ const popup = { dispatchEvent(event) {
 } };
 const source = {
   isConnected: true,
-  closest: () => ({ dataset: { idx: '0' } }),
+  focus() {},
+  closest: () => ({ dataset: { idx: '0' }, classList: { add() {}, remove() {} }, focus() {}, scrollIntoView() {} }),
   click() { documentHandlers.get('popupable:open')({ target: source, detail: { popup } }); },
 };
+window.popupableOpen = target => target.click();
 source.click();
 assert.equal(history.state.pixvaultGalleryPopup, true);
 history.back();
