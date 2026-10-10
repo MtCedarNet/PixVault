@@ -1,0 +1,2413 @@
+/*
+ * popupable v1.11.0, Copyright 2026 Ewan Howell, MIT license (see LICENSE).
+ * PixVault extensions: packing indexes, live append, programmatic opening,
+ * and returning the closing animation to the currently selected source.
+ */
+{
+  let activePopup, previousPopup, mouseDownTarget, popupLoadToken = 0
+  const DRAG_THRESHOLD = 3
+
+  const sourceWidth = el => !el ? 0 : el.tagName === "CANVAS" ? el.width : el.naturalWidth || el.videoWidth || 0
+  const sourceHeight = el => !el ? 0 : el.tagName === "CANVAS" ? el.height : el.naturalHeight || el.videoHeight || 0
+
+  let hapticLabel
+  function triggerHaptic() {
+    if (typeof navigator.vibrate === "function") {
+      navigator.vibrate([10])
+      return
+    }
+    if (!hapticLabel) {
+      hapticLabel = document.createElement("label")
+      hapticLabel.style.cssText = "position:fixed;left:-9999px;top:-9999px;opacity:0;pointer-events:none"
+      const hapticInput = document.createElement("input")
+      hapticInput.type = "checkbox"
+      hapticInput.setAttribute("switch", "")
+      hapticLabel.append(hapticInput)
+      document.body.append(hapticLabel)
+    }
+    hapticLabel.click()
+  }
+
+  function disableScroll() {
+    window.addEventListener("wheel", prevent, { passive: false })
+    window.addEventListener("touchmove", prevent, { passive: false })
+    window.addEventListener("keydown", blockKeys, true)
+  }
+
+  function enableScroll() {
+    window.removeEventListener("wheel", prevent)
+    window.removeEventListener("touchmove", prevent)
+    window.removeEventListener("keydown", blockKeys, true)
+  }
+
+  function prevent(e) {
+    e.preventDefault()
+  }
+
+  function blockKeys(e) {
+    const keys = ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]
+    if (keys.includes(e.key)) e.preventDefault()
+  }
+
+  function getGroupAverageAspect(state) {
+    if (!state?.group) return 0
+    let sum = 0, count = 0
+    for (const item of state.group) {
+      const sw = sourceWidth(item.source)
+      const sh = sourceHeight(item.source)
+      const aspect = (sw && sh) ? sw / sh : item.knownAspect
+      if (aspect) { sum += aspect; count++ }
+    }
+    return count > 0 ? sum / count : 0
+  }
+
+  function contentAreaHeight(state, clone, uiScale) {
+    const container = state.contentContainer
+    const measure = item => item.content ? item.content.getBoundingClientRect().height / uiScale : 0
+    if (state.fixedContentHeight) {
+      let max = 0
+      for (const item of state.group ?? [state]) {
+        max = Math.max(max, measure(item))
+      }
+      return max
+    }
+    if (clone.content) return measure(clone)
+    return container?.previousElementSibling && container?.nextElementSibling ? parseFloat(getComputedStyle(container, "::after").height) || 0 : 0
+  }
+
+  function calcExpandedRect(clone) {
+    const original = clone.original
+    const viewportWidth = visualViewport?.width || window.innerWidth
+    const viewportHeight = visualViewport?.height || window.innerHeight
+    const viewportOffsetTop = visualViewport?.offsetTop || 0
+    const viewportOffsetLeft = visualViewport?.offsetLeft || 0
+    const viewportScale = visualViewport?.scale || 1
+    const uiScale = 1 / viewportScale
+    const paddingSource = activePopup.popup
+    const basePadding = parseFloat(getComputedStyle(paddingSource).getPropertyValue("--popupable-screen-padding")) || 40
+    const padding = basePadding / viewportScale
+    const maxW = Math.max(0, viewportWidth - padding * 2)
+    const maxH = viewportHeight - padding * 2
+    const cloneMaxH = Math.max(0, maxH)
+
+    let aspect
+    if (clone.maintainAspect) {
+      const rect = original.getBoundingClientRect()
+      aspect = rect.width / rect.height
+    } else {
+      const sw = sourceWidth(clone.source)
+      const sh = sourceHeight(clone.source)
+      aspect = (sw / sh) || getGroupAverageAspect(activePopup) || 1
+    }
+
+    let topReserved = 0
+    let bottomReserved = 0
+    if (activePopup.orderPlacement) {
+      const counter = activePopup.popup.querySelector(".popupable-counter")
+      const counterHeight = counter ? counter.getBoundingClientRect().height : 0
+      const thumbnailHeight = activePopup.thumbnailsContainer ? activePopup.thumbnailsContainer.getBoundingClientRect().height : 0
+      const contentHeight = contentAreaHeight(activePopup, clone, uiScale) * uiScale
+      const { counterTop, contentTop, thumbnailsTop, counterBottom, contentBottom, thumbnailsBottom } = activePopup.orderPlacement
+      topReserved = (counterTop ? counterHeight : 0) + (contentTop ? contentHeight : 0) + (thumbnailsTop ? thumbnailHeight : 0)
+      bottomReserved = (counterBottom ? counterHeight : 0) + (contentBottom ? contentHeight : 0) + (thumbnailsBottom ? thumbnailHeight : 0)
+    }
+
+    const constrainedMaxH = Math.max(0, viewportHeight - topReserved - bottomReserved - padding * 2)
+    let finalW = maxW
+    let finalH = finalW / aspect
+    if (finalH > cloneMaxH) {
+      finalH = cloneMaxH
+      finalW = finalH * aspect
+    }
+    if (finalH > constrainedMaxH) {
+      finalH = constrainedMaxH
+      finalW = finalH * aspect
+    }
+    if (clone.noUpscale) {
+      const noUpscaleSource = clone.cloneLayer || original
+      const sourceW = sourceWidth(noUpscaleSource)
+      const sourceH = sourceHeight(noUpscaleSource)
+      if (sourceW && sourceH) {
+        const effectiveSourceW = sourceW / viewportScale
+        const effectiveSourceH = sourceH / viewportScale
+        const noUpscaleMultiplier = Math.min(1, effectiveSourceW / finalW, effectiveSourceH / finalH)
+        if (noUpscaleMultiplier < 1) {
+          finalW *= noUpscaleMultiplier
+          finalH *= noUpscaleMultiplier
+        }
+      }
+    }
+    let finalTop = viewportOffsetTop + padding + (cloneMaxH - finalH) / 2
+    const maxTop = viewportOffsetTop + viewportHeight - bottomReserved - padding - finalH
+    finalTop = Math.min(finalTop, maxTop)
+    finalTop = Math.max(finalTop, viewportOffsetTop + topReserved + padding)
+    return {
+      top: finalTop,
+      left: viewportOffsetLeft + padding + (maxW - finalW) / 2,
+      width: finalW,
+      height: finalH
+    }
+  }
+
+  window.popupableAnimTypes = {
+    expand: {
+      styles: true,
+      hideSource: true,
+      crossfade: true,
+      position(el) {
+        const rect = el.getBoundingClientRect()
+        const popupRect = activePopup.popup.getBoundingClientRect()
+        return {
+          top: rect.top - popupRect.top,
+          left: rect.left - popupRect.left,
+          width: rect.width,
+          height: rect.height
+        }
+      },
+      close: {
+        condition(original) {
+          if (!original.isConnected) return false
+          if (original.checkVisibility && !original.checkVisibility()) return false
+
+          const rect = original.getBoundingClientRect()
+          if (rect.width === 0 || rect.height === 0) return false
+
+          const intersects = box =>
+            rect.right > box.left && rect.left < box.right &&
+            rect.bottom > box.top && rect.top < box.bottom
+
+          const originalPosition = getComputedStyle(original).position
+          if (originalPosition !== "fixed") {
+            const climb = el => {
+              if (el.parentElement) return el.parentElement
+              const root = el.getRootNode && el.getRootNode()
+              return root instanceof ShadowRoot ? root.host : null
+            }
+            let node = climb(original)
+            let waitingForContainingBlock = originalPosition === "absolute"
+            while (node && node !== document.documentElement) {
+              const style = getComputedStyle(node)
+              const positioned = style.position !== "static"
+              if (!waitingForContainingBlock || positioned) {
+                if (style.overflowX !== "visible" || style.overflowY !== "visible") {
+                  if (!intersects(node.getBoundingClientRect())) return false
+                }
+              }
+              if (positioned) waitingForContainingBlock = false
+              if (style.position === "fixed") break
+              if (style.position === "absolute") waitingForContainingBlock = true
+              node = climb(node)
+            }
+          }
+
+          const viewportWidth = visualViewport?.width || window.innerWidth
+          const viewportHeight = visualViewport?.height || window.innerHeight
+          const popupRect = activePopup.popup.getBoundingClientRect()
+          const viewLeft = popupRect.left + (visualViewport?.offsetLeft || 0)
+          const viewTop = popupRect.top + (visualViewport?.offsetTop || 0)
+          return intersects({ left: viewLeft, top: viewTop, right: viewLeft + viewportWidth, bottom: viewTop + viewportHeight })
+        },
+        fallback: "pop"
+      }
+    },
+    pop: {
+      fade: true,
+      position(original, { top, left, width, height }) {
+        return {
+          top: top + height * 0.05,
+          left: left + width * 0.05,
+          width: width * 0.9,
+          height: height * 0.9
+        }
+      }
+    },
+    line: {
+      fade: true,
+      position(original, { top, left, width, height }) {
+        return {
+          top: top + height / 2,
+          left: left + width * 0.05,
+          width: width * 0.9,
+          height: 0
+        }
+      }
+    },
+    float: {
+      fade: true,
+      position(original, { top, left, width, height }) {
+        return {
+          top: top + 40,
+          left,
+          width,
+          height
+        }
+      }
+    }
+  }
+
+  function setCloneToOriginalRect(cloneContainer, original) {
+    const after = calcExpandedRect(activePopup)
+    const { top, left, width, height } = activePopup.animation.position(original, after)
+    cloneContainer.style.top = top + "px"
+    cloneContainer.style.left = left + "px"
+    cloneContainer.style.width = width + "px"
+    cloneContainer.style.height = height + "px"
+  }
+
+  const DECODE_WINDOW = 3
+  function parseCssTime(value) {
+    if (!value) return 0
+    const v = parseFloat(value)
+    if (Number.isNaN(v)) return 0
+    return /ms\s*$/i.test(value) ? v : v * 1000
+  }
+  function getReleaseDelay(state) {
+    const el = state?.popup || document.documentElement
+    return parseCssTime(getComputedStyle(el).getPropertyValue("--popupable-switch-duration"))
+  }
+  function buildDecodeQueue(state, idx = state.group?.currentIndex, { delayRelease = true } = {}) {
+    if (!state.group) return
+    const len = state.group.length
+    const looping = state.looping && len > 1
+    const distance = i => {
+      const d = Math.abs(i - idx)
+      return looping ? Math.min(d, len - d) : d
+    }
+    const releaseDelay = delayRelease ? getReleaseDelay(state) : 0
+    for (let i = 0; i < len; i++) {
+      const item = state.group[i]
+      if (distance(i) > DECODE_WINDOW) {
+        if (item.releaseDecode && !item._releaseTimer) {
+          if (releaseDelay <= 0) {
+            item.releaseDecode()
+          } else {
+            item._releaseTimer = setTimeout(() => {
+              item._releaseTimer = null
+              item.releaseDecode()
+            }, releaseDelay)
+          }
+        }
+      } else if (item._releaseTimer) {
+        clearTimeout(item._releaseTimer)
+        item._releaseTimer = null
+      }
+    }
+    const queue = []
+    const queued = new Set([state.group.currentIndex])
+    const pushIndex = i => {
+      if (looping) i = ((i % len) + len) % len
+      if (i < 0 || i >= len || queued.has(i)) return
+      queued.add(i)
+      queue.push(state.group[i])
+    }
+    pushIndex(idx)
+    for (let offset = 1; offset <= DECODE_WINDOW; offset++) {
+      pushIndex(idx + offset)
+      pushIndex(idx - offset)
+    }
+    state.decodeQueue = queue
+    runDecodeQueue(state)
+  }
+
+  function projectSnapIndex(group, dx) {
+    const W = visualViewport?.width || window.innerWidth
+    const scale = visualViewport?.scale || 1
+    const dxa = Math.abs(dx)
+    const threshold = Math.max(W * 0.1, 64 / scale)
+    if (dxa <= threshold) return group.currentIndex
+    const multiplier = Math.max(0, Math.floor((dxa - W / 2) / W))
+    const steps = multiplier + 1
+    const direction = dx > 0 ? -1 : 1
+    return Math.max(0, Math.min(group.length - 1, group.currentIndex + direction * steps))
+  }
+
+  const DRAG_DECODE_INTERVAL = 100
+  let dragDecodeLastAt = 0, dragDecodeTimer = null, dragDecodePending = -1
+  function scheduleDragDecodeQueue(idx) {
+    dragDecodePending = idx
+    if (dragDecodeTimer) return
+    const wait = Math.max(0, DRAG_DECODE_INTERVAL - (performance.now() - dragDecodeLastAt))
+    dragDecodeTimer = setTimeout(() => {
+      dragDecodeTimer = null
+      dragDecodeLastAt = performance.now()
+      const pending = dragDecodePending
+      dragDecodePending = -1
+      if (pending >= 0 && activePopup?.group && pending !== activePopup.group.currentIndex) {
+        buildDecodeQueue(activePopup, pending, { delayRelease: false })
+      }
+    }, wait)
+  }
+  function cancelDragDecodeQueue() {
+    if (dragDecodeTimer) { clearTimeout(dragDecodeTimer); dragDecodeTimer = null }
+    dragDecodePending = -1
+  }
+
+  async function runDecodeQueue(state) {
+    if (state.decodeQueueRunning) return
+    state.decodeQueueRunning = true
+    while (state.decodeQueue && state.decodeQueue.length && !state.decodeAborted) {
+      const next = state.decodeQueue.shift()
+      try { await next.triggerDecode() } catch {}
+    }
+    state.decodeQueueRunning = false
+  }
+
+  function openPopupable(toOpen) {
+    if (toOpen.state === "open") return
+    toOpen.state = "open"
+    triggerHaptic()
+    toOpen.openEventFired = true
+    toOpen.original.dispatchEvent(new CustomEvent("popupable:open", { bubbles: true, composed: true, detail: { popup: toOpen.popup } }))
+
+    const { cloneContainer, popup, transition, group, listeners } = toOpen
+
+    popup.classList.add("popupable-active")
+    toOpen.clearNavInactive?.()
+
+    updateExpandedSize()
+
+    toOpen.closingContainer?.removeEventListener("transitionend", transition.listener)
+    const openTransitionContainer = toOpen.closingContainer ?? cloneContainer
+
+    transition.listener = e => {
+      if (e && e.target !== e.currentTarget) return
+      openTransitionContainer.removeEventListener("transitionend", transition.listener)
+      popup.classList.add("popupable-open")
+      const openCurrent = group ? group[group.currentIndex] : toOpen
+      if (openCurrent.video) {
+        if (openCurrent.zoomable) {
+          openCurrent.source.controls = false
+        } else if (!openCurrent.explicitControls) {
+          openCurrent.source.controls = true
+        }
+      }
+      if (group) {
+        for (const entry of group) {
+          entry.cloneContainer.style.display = null
+        }
+      }
+      for (const listener of listeners) {
+        listener.target.addEventListener(listener.event, listener.func, listener.args)
+      }
+      toOpen.scheduleNavHide?.()
+    }
+
+    if (transition.duration) {
+      openTransitionContainer.addEventListener("transitionend", transition.listener)
+    } else {
+      transition.listener()
+    }
+  }
+
+  function closePopupable() {
+    if (!activePopup || activePopup.state === "close") return
+    popupLoadToken++
+    activePopup.state = "close"
+    activePopup.decodeAborted = true
+    activePopup.decodeQueue = null
+    if (activePopup.group) {
+      for (const item of activePopup.group) {
+        if (item._releaseTimer) { clearTimeout(item._releaseTimer); item._releaseTimer = null }
+      }
+    }
+    document.body.classList.add("popupable-block-touch")
+    setTimeout(() => document.body.classList.remove("popupable-block-touch"), 300)
+
+    const { cloneContainer, original, popup, transition, group, listeners, wasPlaying } = activePopup
+
+    original.classList.remove("popupable-loading")
+    popup.classList.remove("popupable-active")
+    popup.classList.remove("popupable-open")
+
+    const closingContainer = group ? group[group.currentIndex].cloneContainer : cloneContainer
+    activePopup.closingContainer = closingContainer
+
+    const closeRule = activePopup.animation.close
+    if (closeRule?.condition && !closeRule.condition(original)) {
+      const fallbackName = popupableAnimTypes[closeRule.fallback] ? closeRule.fallback : "pop"
+      const fallback = popupableAnimTypes[fallbackName]
+      if (fallback && fallback !== activePopup.animation) {
+        popup.classList.remove(`popupable-anim-${activePopup.animationName}`)
+        popup.classList.add(`popupable-anim-${fallbackName}`)
+        popup.classList.toggle("popupable-crossfade", !!fallback.crossfade)
+        popup.classList.toggle("popupable-fade", !!fallback.fade)
+        activePopup.animation = fallback
+        activePopup.animationName = fallbackName
+      }
+    }
+
+    closingContainer.style.transitionDuration = ""
+    setCloneToOriginalRect(closingContainer, original)
+
+    if (group) {
+      for (const entry of group) {
+        if (entry.cloneContainer !== closingContainer) {
+          entry.cloneContainer.style.display = "none"
+        }
+      }
+    }
+
+    for (const listener of listeners) {
+      listener.target.removeEventListener(listener.event, listener.func)
+    }
+
+    cloneContainer.removeEventListener("transitionend", transition.listener)
+
+    const closingClone = group ? group[group.currentIndex] : activePopup
+    if (closingClone.video && closingClone.source) {
+      closingClone.source.controls = false
+    }
+    const isOriginalClone = closingClone.original === original
+
+    const check = activePopup
+    transition.listener = e => {
+      if (e && e.target !== e.currentTarget) return
+      closingContainer.removeEventListener("transitionend", transition.listener)
+      original.classList.remove("popupable-hide")
+      original.classList.remove("popupable-source-open")
+      if (wasPlaying && original.tagName === "VIDEO") {
+        if (isOriginalClone && closingClone.video && !closingClone.cloneLayer) {
+          original.currentTime = closingClone.source.currentTime
+        }
+        original.play().catch(() => original.load())
+      }
+      for (const mirror of popup.querySelectorAll("canvas")) {
+        mirror.popupableStopMirror?.()
+      }
+      popup.remove()
+      if (check.openEventFired) {
+        original.dispatchEvent(new CustomEvent("popupable:close", { bubbles: true, composed: true, detail: { popup } }))
+      }
+      if (check === activePopup) {
+        enableScroll()
+        previousPopup = activePopup
+        activePopup = null
+      }
+    }
+
+    if (transition.duration) {
+      closingContainer.addEventListener("transitionend", transition.listener)
+    } else {
+      transition.listener()
+    }
+  }
+
+  function updateExpandedSize() {
+    if (!activePopup || activePopup.state === "close") return
+    const clonesForCheck = activePopup.group ?? [activePopup]
+    if (clonesForCheck.some(c => c.cloneContainer?.classList.contains("popupable-block-transitions"))) return
+
+    const viewportWidth = visualViewport?.width || window.innerWidth
+    const viewportHeight = visualViewport?.height || window.innerHeight
+    const viewportOffsetTop = visualViewport?.offsetTop || 0
+    const viewportOffsetLeft = visualViewport?.offsetLeft || 0
+    const viewportScale = visualViewport?.scale || 1
+
+    document.documentElement.style.setProperty("--popupable-view-width", viewportWidth + "px")
+    activePopup.popup.style.setProperty("--popupable-vv-width", viewportWidth + "px")
+    activePopup.popup.style.setProperty("--popupable-vv-height", viewportHeight + "px")
+    activePopup.popup.style.setProperty("--popupable-vv-top", viewportOffsetTop + "px")
+    activePopup.popup.style.setProperty("--popupable-vv-left", viewportOffsetLeft + "px")
+    activePopup.popup.style.setProperty("--popupable-vv-scale", viewportScale)
+    activePopup.popup.style.setProperty("--popupable-vv-ui-scale", 1 / viewportScale)
+    const uiScale = 1 / viewportScale
+
+    let clones
+    if (activePopup.group) {
+      clones = activePopup.group
+    } else {
+      clones = [activePopup]
+    }
+
+    for (const clone of clones) {
+      const { top, left, width, height } = calcExpandedRect(clone)
+      clone.cloneContainer.style.top = top + "px"
+      clone.cloneContainer.style.left = left + "px"
+      clone.cloneContainer.style.width = width + "px"
+      clone.cloneContainer.style.height = height + "px"
+    }
+
+    if (activePopup.contentContainer) {
+      let active
+      if (activePopup.group) {
+        active = activePopup.group[activePopup.group.currentIndex]
+      } else {
+        active = activePopup
+      }
+      activePopup.contentContainer.style.height = contentAreaHeight(activePopup, active, uiScale) + "px"
+    }
+  }
+
+  let shadowSheet
+  const styledRoots = new WeakSet()
+  function ensureShadowStyles(el) {
+    const root = el?.getRootNode?.()
+    if (!(root instanceof ShadowRoot) || styledRoots.has(root)) return
+    if (!shadowSheet) {
+      shadowSheet = new CSSStyleSheet()
+      shadowSheet.replaceSync(`.popupable-hide{visibility:hidden!important}.popupable-loading,.popupable-loading *{cursor:wait!important}[data-popupable-content="next"]+*,*:has(+ [data-popupable-content="prev"]){display:none!important}`)
+    }
+    styledRoots.add(root)
+    root.adoptedStyleSheets = [...root.adoptedStyleSheets, shadowSheet]
+  }
+
+  const VIDEO_EXTENSIONS = /\.(mp4|m4v|webm|ogv|mov|3gp|m3u8|flv)(\?|#|$)/i
+
+  function isVideo(el) {
+    const explicit = inheritStringAttr(el, "data-popupable-type")
+    if (explicit) return explicit === "video"
+    if (el.tagName === "VIDEO") return true
+    if (el.tagName === "IMG") return false
+    const src = el.getAttribute("data-popupable-src") || el.getAttribute("src") || ""
+    return VIDEO_EXTENSIONS.test(src)
+  }
+
+  const getElementSrc = el => el.getAttribute("currentSrc") || el.getAttribute("src") || el.getAttribute("data-popupable-src")
+
+  function ancestorClosest(element, selector) {
+    let node = element
+    while (node) {
+      const hit = node.closest?.(selector)
+      if (hit) return hit
+      const root = node.getRootNode?.()
+      node = root instanceof ShadowRoot ? root.host : null
+    }
+    return null
+  }
+
+  function composedClosest(e, selector) {
+    for (const node of e.composedPath()) {
+      if (node.nodeType === 1 && node.matches?.(selector)) return node
+    }
+    return null
+  }
+
+  function inheritAttr(element, attr) {
+    const el = ancestorClosest(element, `[${attr}]`)
+    if (!el) return
+    const value = el.getAttribute(attr)
+    if (value === "false") return
+    return value || true
+  }
+
+  function inheritStringAttr(element, attr) {
+    const value = inheritAttr(element, attr)
+    if (typeof value === "string") return value
+  }
+
+  function resolveProp(el, key) {
+    if (key in el) return key
+    const lower = key.toLowerCase()
+    for (let proto = el; proto; proto = Object.getPrototypeOf(proto)) {
+      for (const name of Object.getOwnPropertyNames(proto)) {
+        if (name.toLowerCase() === lower) return name
+      }
+    }
+    return key
+  }
+
+  function parsePopupableOrder(value) {
+    const defaultOrder = ["counter", "image", "content", "thumbnails"]
+    const allowed = new Set(defaultOrder)
+    const order = []
+
+    if (value) {
+      for (const part of value.split(",")) {
+        const token = part.trim().toLowerCase()
+        if (!token || !allowed.has(token) || order.includes(token)) continue
+        order.push(token)
+      }
+    }
+
+    for (const token of defaultOrder) {
+      if (!order.includes(token)) {
+        order.push(token)
+      }
+    }
+
+    const imageIndex = order.indexOf("image")
+    return {
+      top: order.slice(0, imageIndex),
+      bottom: order.slice(imageIndex + 1)
+    }
+  }
+
+  function createCanvasMirror(sourceCanvas, { onResize, fps } = {}) {
+    const mirror = document.createElement("canvas")
+    const ctx = mirror.getContext("2d")
+    const interval = fps ? 1000 / fps : 0
+    let raf = null
+    let running = false
+    let visible = false
+    let lastDraw = 0
+    function draw() {
+      const resized = mirror.width !== sourceCanvas.width || mirror.height !== sourceCanvas.height
+      if (resized) {
+        mirror.width = sourceCanvas.width
+        mirror.height = sourceCanvas.height
+      }
+      if (mirror.width && mirror.height) {
+        ctx.clearRect(0, 0, mirror.width, mirror.height)
+        ctx.drawImage(sourceCanvas, 0, 0)
+      }
+      return resized
+    }
+    draw()
+    function tick(now) {
+      raf = null
+      if (!running || !visible) return
+      if (!interval || now - lastDraw >= interval) {
+        lastDraw = now
+        if (draw() && onResize) onResize()
+      }
+      raf = requestAnimationFrame(tick)
+    }
+    function schedule() {
+      if (running && visible && raf === null) raf = requestAnimationFrame(tick)
+    }
+    const observer = new IntersectionObserver(entries => {
+      visible = entries[entries.length - 1].isIntersecting
+      if (visible) draw()
+      schedule()
+    })
+    mirror.popupableStartMirror = () => {
+      if (running) return
+      running = true
+      observer.observe(mirror)
+      schedule()
+    }
+    mirror.popupableStopMirror = () => {
+      if (!running) return
+      running = false
+      visible = false
+      observer.disconnect()
+      if (raf !== null) {
+        cancelAnimationFrame(raf)
+        raf = null
+      }
+    }
+    return mirror
+  }
+
+  function cloneElement(original, base = original) {
+    const cloneObj = { knownAspect: 0 }
+    const rawAnim = inheritAttr(original, "data-popupable-anim")
+    const animationName = popupableAnimTypes[rawAnim] ? rawAnim : "expand"
+    const animation = popupableAnimTypes[animationName]
+    const popupableSrc = inheritStringAttr(original, "data-popupable-src")
+    const elementSrc = getElementSrc(original)
+    const popupableTitle = inheritStringAttr(original, "data-popupable-title")
+    const popupableDescription = inheritStringAttr(original, "data-popupable-description")
+    const zoomable = inheritAttr(original, "data-popupable-zoomable")
+    const styles = getComputedStyle(original)
+    const baseStyles = base === original ? styles : getComputedStyle(base)
+    const baseSrc = base !== original ? getElementSrc(base) : null
+    const isActiveClone = base === original
+
+    const cloneContainer = document.createElement("div")
+    cloneContainer.className = "popupable-clone-container"
+    if (inheritAttr(original, "data-popupable-transparent")) cloneContainer.classList.add("popupable-transparent")
+    if (zoomable) cloneContainer.classList.add("popupable-zoomable")
+    if (animation.styles) {
+      cloneContainer.style.borderRadius = styles.borderRadius
+      cloneContainer.style.border = styles.border
+      cloneContainer.style.outline = styles.outline
+      cloneContainer.style.boxShadow = styles.boxShadow
+      if (!animation.fade) {
+        let inheritedOpacity = 1
+        let opacityNode = original
+        while (opacityNode) {
+          inheritedOpacity *= parseFloat(getComputedStyle(opacityNode).opacity) || 1
+          if (opacityNode.parentElement) {
+            opacityNode = opacityNode.parentElement
+          } else {
+            const root = opacityNode.getRootNode && opacityNode.getRootNode()
+            opacityNode = root instanceof ShadowRoot ? root.host : null
+          }
+        }
+        if (inheritedOpacity < 1) cloneContainer.style.opacity = inheritedOpacity
+      }
+    }
+
+    const video = isVideo(original)
+    let wasPlaying = false
+
+    const posterAttr = inheritAttr(original, "data-popupable-poster")
+    const posterSrc = (typeof posterAttr === "string" ? posterAttr : null) || (original.tagName === "VIDEO" ? original.getAttribute("poster") : null)
+
+    const elementCanvas = original.tagName === "CANVAS" ? original : null
+    const baseCanvas = base !== original && base.tagName === "CANVAS" ? base : null
+    const cloneCanvas = baseCanvas || (base === original ? elementCanvas : null)
+    const cloneSrc = cloneCanvas ? null : (baseSrc || elementSrc || popupableSrc)
+    const cloneIsVideo = !cloneCanvas && (VIDEO_EXTENSIONS.test(cloneSrc) || (base.tagName === "VIDEO" && cloneSrc === elementSrc))
+    const hasLayer = (popupableSrc && (elementSrc || elementCanvas)) || baseSrc || baseCanvas
+
+    let clone, cloneLayer, source
+
+    if (cloneCanvas) {
+      clone = createCanvasMirror(cloneCanvas, { onResize: () => { captureAspect(clone); updateExpandedSize() } })
+      clone.className = "popupable-clone"
+      clone.style.imageRendering = baseStyles.imageRendering
+    } else if (cloneIsVideo) {
+      clone = document.createElement("video")
+      clone.className = "popupable-clone"
+      if (isActiveClone) clone.src = cloneSrc
+      clone.playsInline = true
+      clone.controls = false
+      if (!video || hasLayer) {
+        clone.muted = true
+        clone.loop = true
+        clone.autoplay = true
+      }
+      if (isActiveClone && posterSrc && cloneSrc === elementSrc) clone.poster = posterSrc
+    } else {
+      clone = new Image()
+      clone.className = "popupable-clone"
+      if (isActiveClone) clone.src = cloneSrc
+      clone.style.imageRendering = baseStyles.imageRendering
+    }
+    const baseIsMedia = base.tagName === "IMG" || base.tagName === "VIDEO" || base.tagName === "CANVAS"
+    clone.style.objectFit = baseIsMedia ? baseStyles.objectFit : "cover"
+    if (baseIsMedia) clone.style.objectPosition = baseStyles.objectPosition
+    clone.style.background = baseStyles.background
+    cloneContainer.append(clone)
+    const captureAspect = el => {
+      const w = sourceWidth(el)
+      const h = sourceHeight(el)
+      if (w && h) cloneObj.knownAspect = w / h
+    }
+    if (clone.tagName === "VIDEO") {
+      clone.addEventListener("loadedmetadata", () => { captureAspect(clone); updateExpandedSize() })
+    } else if (clone.tagName === "CANVAS") {
+      captureAspect(clone)
+    } else {
+      clone.addEventListener("load", () => { captureAspect(clone); updateExpandedSize() })
+    }
+
+    if (hasLayer) {
+      const layerSrc = popupableSrc || elementSrc
+      const layerCanvas = layerSrc ? null : elementCanvas
+      const layerIsVideo = !layerCanvas && (VIDEO_EXTENSIONS.test(layerSrc) || (video && layerSrc === elementSrc))
+      if (layerCanvas) {
+        cloneLayer = createCanvasMirror(layerCanvas, { onResize: () => { captureAspect(cloneLayer); updateExpandedSize() } })
+        cloneLayer.className = "popupable-clone-layer"
+        cloneLayer.style.imageRendering = styles.imageRendering
+      } else if (layerIsVideo) {
+        cloneLayer = document.createElement("video")
+        cloneLayer.className = "popupable-clone-layer"
+        if (isActiveClone) cloneLayer.src = layerSrc
+        cloneLayer.playsInline = true
+        cloneLayer.controls = false
+        if (!video) {
+          cloneLayer.muted = true
+          cloneLayer.loop = true
+          cloneLayer.autoplay = true
+        }
+        if (isActiveClone && posterSrc && layerSrc === elementSrc) cloneLayer.poster = posterSrc
+      } else {
+        cloneLayer = new Image()
+        cloneLayer.className = "popupable-clone-layer"
+        if (isActiveClone) cloneLayer.src = layerSrc
+        cloneLayer.style.imageRendering = styles.imageRendering
+      }
+      cloneContainer.append(cloneLayer)
+      if (cloneLayer.tagName === "VIDEO") {
+        cloneLayer.addEventListener("loadedmetadata", () => { captureAspect(cloneLayer); updateExpandedSize() })
+      } else if (cloneLayer.tagName === "CANVAS") {
+        captureAspect(cloneLayer)
+      } else {
+        cloneLayer.addEventListener("load", () => { captureAspect(cloneLayer); updateExpandedSize() })
+      }
+
+      if (clone.style.objectFit === "fill" && clone.tagName === "IMG") {
+        const rect = original.getBoundingClientRect()
+        if (original.naturalWidth && original.naturalHeight && Math.abs(rect.width / rect.height - original.naturalWidth / original.naturalHeight) < 0.01) {
+          clone.style.objectFit = "cover"
+        }
+      }
+
+      source = cloneLayer
+    } else {
+      source = clone
+    }
+
+    if (video && original.tagName === "VIDEO" && base === original) {
+      if (cloneIsVideo) clone.currentTime = original.currentTime
+      wasPlaying = !original.paused
+      original.pause()
+    }
+
+    const attrSpec = inheritAttr(original, "data-popupable-attr")
+    let explicitControls = false
+    if (typeof attrSpec === "string") {
+      for (const part of attrSpec.split(",")) {
+        const trimmed = part.trim()
+        if (!trimmed) continue
+        const eqIdx = trimmed.indexOf("=")
+        if (eqIdx === -1) {
+          source[resolveProp(source, trimmed)] = true
+          if (trimmed.toLowerCase() === "controls") explicitControls = true
+        } else {
+          const key = trimmed.slice(0, eqIdx).trim()
+          const raw = trimmed.slice(eqIdx + 1).trim()
+          const num = Number(raw)
+          const prop = resolveProp(source, key)
+          if (raw === "true") source[prop] = true
+          else if (raw === "false") source[prop] = false
+          else if (raw !== "" && !Number.isNaN(num)) source[prop] = num
+          else source[prop] = raw
+          if (key.toLowerCase() === "controls") explicitControls = true
+          if (key.toLowerCase() === "playbackrate") source.defaultPlaybackRate = source.playbackRate
+        }
+      }
+    }
+
+    let content
+    const contentSelector = inheritStringAttr(original, "data-popupable-content")
+    if (contentSelector) {
+      let contentSource
+      if (contentSelector === "next") {
+        contentSource = original.nextElementSibling
+      } else if (contentSelector === "prev") {
+        contentSource = original.previousElementSibling
+      } else {
+        const root = original.getRootNode?.() ?? document
+        try { contentSource = root.getElementById?.(contentSelector) || root.querySelector(contentSelector) } catch {}
+      }
+      if (contentSource) {
+        let customContent
+        if (contentSource.tagName === "TEMPLATE") {
+          customContent = contentSource.content.cloneNode(true)
+        } else {
+          customContent = contentSource.cloneNode(true)
+          customContent.removeAttribute("hidden")
+          customContent.removeAttribute("id")
+          if (customContent.style.display === "none") customContent.style.display = ""
+        }
+        content = document.createElement("div")
+        content.classList = "popupable-content"
+        content.append(customContent)
+      }
+    }
+    if (!content && (popupableTitle || popupableDescription)) {
+      content = document.createElement("div")
+      content.classList = "popupable-content"
+
+      if (popupableTitle) {
+        const title = document.createElement("div")
+        title.className = "popupable-title"
+        title.textContent = popupableTitle
+        content.append(title)
+      }
+
+      if (popupableDescription) {
+        const description = document.createElement("div")
+        description.className = "popupable-description"
+        description.textContent = popupableDescription
+        content.append(description)
+      }
+    }
+
+    const els = [clone, cloneLayer].filter(Boolean)
+    const videoReady = Promise.all(els.filter(el => el.tagName === "VIDEO").map(el => {
+      const metaPromise = new Promise(resolve => {
+        if (el.readyState >= 1) return resolve()
+        el.addEventListener("loadedmetadata", resolve, { once: true })
+        el.addEventListener("error", resolve, { once: true })
+      })
+      if (el.poster) {
+        const posterPromise = new Promise(resolve => {
+          const posterImg = new Image()
+          posterImg.addEventListener("load", resolve, { once: true })
+          posterImg.addEventListener("error", resolve, { once: true })
+          posterImg.src = el.poster
+        })
+        return Promise.all([posterPromise, metaPromise])
+      }
+      return metaPromise
+    }))
+
+    const originalCloneSrc = cloneSrc
+    const originalLayerSrc = cloneLayer ? (popupableSrc || elementSrc) : null
+    let loadBehind = isActiveClone || !cloneLayer
+    const clonePosterSrc = clone.tagName === "VIDEO" && posterSrc && cloneSrc === elementSrc ? posterSrc : null
+    const layerPosterSrc = cloneLayer && cloneLayer.tagName === "VIDEO" && posterSrc && (popupableSrc || elementSrc) === elementSrc ? posterSrc : null
+    let released = !isActiveClone
+    let decodePromise = null
+    const rand = (min, max) => min + Math.random() * (max - min)
+    const hsl = (h, s, l) => `hsl(${h.toFixed(0)} ${s.toFixed(0)}% ${l.toFixed(0)}%)`
+    const mood = Math.random()
+    let baseLight, peakLight, sat
+    if (mood < 0.2)       { baseLight = rand(6, 14);  peakLight = rand(22, 38); sat = rand(20, 45) }
+    else if (mood < 0.55) { baseLight = rand(14, 26); peakLight = rand(38, 58); sat = rand(25, 55) }
+    else if (mood < 0.85) { baseLight = rand(22, 38); peakLight = rand(58, 75); sat = rand(35, 65) }
+    else                  { baseLight = rand(32, 50); peakLight = rand(72, 90); sat = rand(40, 75) }
+    const baseHue = rand(0, 360)
+    const accentHue = (baseHue + rand(20, 140)) % 360
+    const glowHue = (baseHue + rand(-40, 220) + 360) % 360
+    cloneContainer.style.setProperty("--popupable-loading-x1", rand(0, 100).toFixed(0) + "%")
+    cloneContainer.style.setProperty("--popupable-loading-y1", rand(0, 100).toFixed(0) + "%")
+    cloneContainer.style.setProperty("--popupable-loading-x2", rand(0, 100).toFixed(0) + "%")
+    cloneContainer.style.setProperty("--popupable-loading-y2", rand(0, 100).toFixed(0) + "%")
+    cloneContainer.style.setProperty("--popupable-loading-c1", `hsla(${glowHue.toFixed(0)} ${Math.min(95, sat + rand(10, 25)).toFixed(0)}% ${peakLight.toFixed(0)}% / ${rand(0.55, 0.9).toFixed(2)})`)
+    cloneContainer.style.setProperty("--popupable-loading-c2", `hsla(${accentHue.toFixed(0)} ${sat.toFixed(0)}% ${(peakLight * 0.8).toFixed(0)}% / ${rand(0.4, 0.75).toFixed(2)})`)
+    cloneContainer.style.setProperty("--popupable-loading-angle", rand(0, 360).toFixed(0) + "deg")
+    cloneContainer.style.setProperty("--popupable-loading-a", hsl(baseHue, sat * 0.6, baseLight))
+    cloneContainer.style.setProperty("--popupable-loading-b", hsl(accentHue, sat * 0.8, (baseLight + peakLight) / 2))
+    if (released) cloneContainer.classList.add("popupable-clone-loading")
+    function ensureLoaded() {
+      if (!released) return
+      released = false
+      cloneContainer.classList.remove("popupable-clone-loading")
+      if (loadBehind && originalCloneSrc && !clone.getAttribute("src")) {
+        clone.src = originalCloneSrc
+        if (clone.tagName === "VIDEO" && clonePosterSrc) clone.poster = clonePosterSrc
+      }
+      if (cloneLayer && originalLayerSrc && !cloneLayer.getAttribute("src")) {
+        cloneLayer.src = originalLayerSrc
+        if (cloneLayer.tagName === "VIDEO" && layerPosterSrc) cloneLayer.poster = layerPosterSrc
+      }
+      clone.popupableStartMirror?.()
+      cloneLayer?.popupableStartMirror?.()
+    }
+    function markAsActiveInGroup() {
+      loadBehind = true
+      if (!released && originalCloneSrc && !clone.getAttribute("src")) {
+        clone.src = originalCloneSrc
+        if (clone.tagName === "VIDEO" && clonePosterSrc) clone.poster = clonePosterSrc
+      }
+    }
+    function releaseDecode() {
+      if (released) return
+      released = true
+      decodePromise = null
+      cloneContainer.classList.add("popupable-clone-loading")
+      if (clone.tagName === "VIDEO") {
+        if (!clone.paused) clone.pause()
+        clone.removeAttribute("src")
+        clone.removeAttribute("poster")
+        clone.load()
+      } else if (clone.tagName === "CANVAS") {
+        clone.popupableStopMirror()
+      } else {
+        clone.removeAttribute("src")
+      }
+      if (cloneLayer) {
+        if (cloneLayer.tagName === "VIDEO") {
+          if (!cloneLayer.paused) cloneLayer.pause()
+          cloneLayer.removeAttribute("src")
+          cloneLayer.removeAttribute("poster")
+          cloneLayer.load()
+        } else if (cloneLayer.tagName === "CANVAS") {
+          cloneLayer.popupableStopMirror()
+        } else {
+          cloneLayer.removeAttribute("src")
+        }
+      }
+    }
+    function triggerDecode() {
+      ensureLoaded()
+      if (decodePromise) return decodePromise
+      const imageEls = els.filter(el => el.tagName === "IMG")
+      if (!imageEls.length) {
+        decodePromise = videoReady
+        return decodePromise
+      }
+      decodePromise = Promise.all(imageEls.map(el =>
+        el.decode ? el.decode().catch(() => {}) : new Promise(resolve => {
+          if (el.complete) return resolve()
+          el.addEventListener("load", resolve, { once: true })
+          el.addEventListener("error", resolve, { once: true })
+        })
+      )).then(() => videoReady)
+      return decodePromise
+    }
+
+    if (isActiveClone) {
+      clone.popupableStartMirror?.()
+      cloneLayer?.popupableStartMirror?.()
+    }
+
+    Object.assign(cloneObj, {
+      id: original.dataset.popupable,
+      original,
+      cloneContainer,
+      clone,
+      cloneLayer,
+      maintainAspect: inheritAttr(original, "data-popupable-maintain-aspect"),
+      noUpscale: inheritAttr(original, "data-popupable-no-upscale"),
+      counter: inheritAttr(original, "data-popupable-counter"),
+      thumbnails: inheritAttr(original, "data-popupable-thumbnails"),
+      looping: inheritAttr(original, "data-popupable-looping"),
+      fixedContentHeight: inheritAttr(original, "data-popupable-fixed-content-height"),
+      order: parsePopupableOrder(inheritStringAttr(original, "data-popupable-order")),
+      animationName,
+      animation,
+      triggerDecode,
+      ensureLoaded,
+      markAsActiveInGroup,
+      releaseDecode,
+      content,
+      zoomable,
+      source,
+      video,
+      explicitControls,
+      wasPlaying
+    })
+    Object.defineProperty(cloneObj, "ready", { get: triggerDecode, configurable: true })
+    return cloneObj
+  }
+
+  let dragging, downX, downY
+
+  document.addEventListener("pointerdown", e => {
+    if (e.button !== 0) return
+    if (!dragging) {
+      mouseDownTarget = e.composedPath()[0] ?? e.target
+      downX = e.clientX
+      downY = e.clientY
+    }
+
+    if (dragging || activePopup?.state !== "open") return
+    if (composedClosest(e, ".popupable-header, .popupable-footer")) return
+    const current = activePopup.group?.[activePopup.group.currentIndex]
+    if (current?.video && current.source?.controls) {
+      const rect = current.source.getBoundingClientRect()
+      const band = Math.min(60, rect.height * 0.25)
+      if (downX >= rect.left && downX <= rect.right && downY >= rect.bottom - band && downY <= rect.bottom) return
+    }
+    dragging = true
+  })
+
+  let draggedPastThreshold = false
+
+  function handleMove(e) {
+    if (activePopup?.state !== "open" || !activePopup.group || !dragging) return
+    if (!activePopup.popup?.classList.contains("popupable-open")) {
+      downX = e.touches?.[0].clientX ?? e.clientX
+      downY = e.touches?.[0].clientY ?? e.clientY
+      return
+    }
+    if (getReleaseDelay(activePopup) <= 0) return
+    const current = activePopup.group[activePopup.group.currentIndex]
+    const clientX = e.touches?.[0].clientX ?? e.clientX
+    if (!draggedPastThreshold && Math.abs(clientX - downX) > DRAG_THRESHOLD && current.video) {
+      draggedPastThreshold = true
+      current.source.style.pointerEvents = "none"
+    }
+    current.cloneContainer.parentElement.style.transition = "initial"
+    current.cloneContainer.parentElement.style.transform = `translateX(${clientX - downX}px)`
+
+    const projected = projectSnapIndex(activePopup.group, clientX - downX)
+    if (projected !== activePopup.lastProjectedIndex) {
+      activePopup.lastProjectedIndex = projected
+      scheduleDragDecodeQueue(projected)
+    }
+  }
+
+  document.addEventListener("mousemove", handleMove)
+  document.addEventListener("touchmove", handleMove, { passive: true })
+
+  async function handlePointerUp(e) {
+    if (e.button !== 0) return
+
+    if (dragging) {
+      dragging = false
+      cancelDragDecodeQueue()
+      const current = activePopup.group ? activePopup.group[activePopup.group.currentIndex] : activePopup
+      if (draggedPastThreshold) {
+        draggedPastThreshold = false
+        current.source.style.pointerEvents = null
+      }
+      current.cloneContainer.parentElement.style.transition = null
+      current.cloneContainer.parentElement.style.transform = null
+      const dx = e.clientX - downX
+      const dxa = Math.abs(dx)
+      const dy = e.clientY - downY
+      const dya = Math.abs(dy)
+      const viewportScale = visualViewport?.scale || 1
+      if (e.pointerType === "touch" && dya > 56 / viewportScale && dya > dxa * 1.1) {
+        closePopupable()
+        return
+      }
+      if (activePopup.group && dxa > DRAG_THRESHOLD) {
+        const viewportWidth = visualViewport?.width || window.innerWidth
+        const swipeThreshold = Math.max(viewportWidth * 0.1, 64 / viewportScale)
+        const multiplier = Math.max(0, Math.floor((dxa - viewportWidth / 2) / viewportWidth))
+        if (dx > swipeThreshold) {
+          for (let i = 0; i <= multiplier; i++) {
+            activePopup.goPrev()
+          }
+        } else if (dx < -swipeThreshold) {
+          for (let i = 0; i <= multiplier; i++) {
+            activePopup.goNext()
+          }
+        }
+        activePopup.blocked = true
+        return
+      }
+    }
+
+    const upTarget = e.composedPath()[0] ?? e.target
+    const allowViewportRelease = composedClosest(e, ".popupable-viewport") && !ancestorClosest(mouseDownTarget, ".popupable-viewport")
+
+    if (
+      (!allowViewportRelease &&
+        upTarget != mouseDownTarget &&
+        !(mouseDownTarget.classList.contains("popupable-clone-container") &&
+          upTarget === previousPopup?.original) &&
+        !(ancestorClosest(mouseDownTarget, ".popupable-container") && !composedClosest(e, ".popupable-container"))) ||
+      Math.abs(e.clientX - downX) > DRAG_THRESHOLD || Math.abs(e.clientY - downY) > DRAG_THRESHOLD
+    ) return
+    const original = (allowViewportRelease ? ancestorClosest(mouseDownTarget, "[data-popupable]") : null) || composedClosest(e, "[data-popupable]")
+    if (!original) {
+      if (allowViewportRelease) {
+        closePopupable()
+        return
+      }
+      if (composedClosest(e, ".popupable-container")) {
+        return
+      }
+      if (activePopup) {
+        if (activePopup.state === "zoomed") {
+          activePopup.unzoom()
+        } else {
+          closePopupable()
+        }
+      }
+      return
+    }
+    e.preventDefault()
+
+    if (activePopup && activePopup.state !== "close" && activePopup.original === original) {
+      return
+    }
+
+    if (activePopup) {
+      closePopupable()
+    }
+
+    const loadToken = ++popupLoadToken
+
+    activePopup = {
+      transition: {},
+      listeners: []
+    }
+    const popupState = activePopup
+
+    const cloneList = document.createElement("div")
+    cloneList.className = "popupable-clones"
+
+    const cloneObj = cloneElement(original)
+    const { cloneContainer, content } = cloneObj
+
+    let group
+    const groupEl = ancestorClosest(original, "[data-popupable-group]")
+    const groupRaw = groupEl?.getAttribute("data-popupable-group")
+    const groupValue = groupRaw && groupRaw !== "false" ? groupRaw : null
+    if (groupValue) {
+      const grouped = []
+      const seen = new Set()
+      const searchRoot = original.getRootNode?.() ?? document
+      for (const container of searchRoot.querySelectorAll(`[data-popupable-group="${groupValue}"]`)) {
+        if (container.hasAttribute("data-popupable") && !seen.has(container)) {
+          seen.add(container)
+          grouped.push(container)
+        }
+        for (const el of container.querySelectorAll("[data-popupable]")) {
+          if (seen.has(el)) continue
+          const ownGroup = el.getAttribute("data-popupable-group")
+          if ((ownGroup === null || ownGroup === groupValue) && ancestorClosest(el, "[data-popupable-group]") === container) {
+            seen.add(el)
+            grouped.push(el)
+          }
+        }
+      }
+      // PixVault's masonry DOM is column-major; indexes retain packing order.
+      if (grouped.every(el => el.hasAttribute("data-popupable-index"))) {
+        grouped.sort((a, b) => Number(a.dataset.popupableIndex) - Number(b.dataset.popupableIndex))
+      }
+      if (grouped.length) {
+        group = []
+        for (const [i, orig] of grouped.entries()) {
+          if (orig === original) {
+            group.push(cloneObj)
+            group.currentIndex = i
+            cloneList.append(cloneContainer)
+          } else {
+            const clone = cloneElement(orig, original)
+            clone.cloneContainer.style.display = "none"
+            group.push(clone)
+            cloneList.append(clone.cloneContainer)
+          }
+        }
+        for (const [i, clone] of group.entries()) {
+          if (!clone.content) continue
+          const index = i - group.currentIndex
+          if (index > 0) clone.content.classList.add("popupable-content-after")
+          else if (index < 0) clone.content.classList.add("popupable-content-before")
+        }
+      }
+    } else {
+      cloneList.append(cloneContainer)
+    }
+
+    const popup = document.createElement("div")
+    popup.className = `popupable-container popupable-anim-${cloneObj.animationName}`
+    if (cloneObj.id) {
+      popup.id = cloneObj.id
+    }
+    const viewportLayer = document.createElement("div")
+    viewportLayer.className = "popupable-viewport"
+
+    let contentContainer
+    if (content || (group && group.some(c => c.content))) {
+      contentContainer = document.createElement("div")
+      contentContainer.classList = "popupable-content-container"
+      if (cloneObj.fixedContentHeight) contentContainer.classList.add("popupable-content-fixed-height")
+    }
+
+    let header, footer, counter, thumbnailsContainer, thumbnailItems, hasPositionedThumbnails, goNext, goPrev, lastWheelNavAt, recalculateVisible
+    const orderPlacement = {}
+
+    if (group) {
+      if (cloneObj.counter) {
+        counter = document.createElement("div")
+        counter.className = "popupable-counter"
+      }
+      if (cloneObj.thumbnails) {
+        thumbnailsContainer = document.createElement("div")
+        thumbnailsContainer.className = "popupable-thumbnails"
+        thumbnailItems = group.map((entry, i) => {
+          let thumbnail
+          const thumbAttr = inheritAttr(entry.original, "data-popupable-thumb")
+          const thumbSrc = typeof thumbAttr === "string" ? thumbAttr : null
+          if (entry.video) {
+            const posterAttr = inheritAttr(entry.original, "data-popupable-poster")
+            const poster = (typeof posterAttr === "string" ? posterAttr : null) || (entry.original.tagName === "VIDEO" ? entry.original.getAttribute("poster") : null)
+            if (thumbSrc || poster) {
+              thumbnail = new Image()
+              thumbnail.src = thumbSrc || poster
+            } else {
+              thumbnail = document.createElement("video")
+              thumbnail.src = inheritStringAttr(entry.original, "data-popupable-src") || getElementSrc(entry.original)
+              thumbnail.muted = true
+              thumbnail.playsInline = true
+              thumbnail.preload = "metadata"
+              thumbnail.disablePictureInPicture = true
+              thumbnail.disableRemotePlayback = true
+            }
+          } else {
+            const src = thumbSrc || inheritStringAttr(entry.original, "data-popupable-src") || getElementSrc(entry.original)
+            if (!src && entry.original.tagName === "CANVAS") {
+              thumbnail = createCanvasMirror(entry.original, { fps: 10 })
+              thumbnail.popupableStartMirror()
+            } else {
+              thumbnail = new Image()
+              thumbnail.src = src
+            }
+          }
+          thumbnail.className = "popupable-thumbnail"
+          thumbnail.dataset.thumbnailIndex = i
+          thumbnailsContainer.append(thumbnail)
+          return thumbnail
+        })
+      }
+
+      const looping = cloneObj.looping && group.length > 1
+
+      viewportLayer.innerHTML = `
+        <div class="popupable-button-container popupable-prev-container${!looping && !group.currentIndex ? " popupable-button-disabled" : ""}">
+          <div class="popupable-button popupable-prev">
+            <svg width="24px" height="24px" viewBox="0 -960 960 960" fill="currentColor">
+              <path d="m313-440 224 224-57 56-320-320 320-320 57 56-224 224h487v80H313Z"/>
+            </svg>
+          </div>
+        </div>
+        <div class="popupable-button-container popupable-next-container${!looping && group.currentIndex === group.length - 1 ? " popupable-button-disabled" : ""}">
+          <div class="popupable-button popupable-next">
+            <svg width="24px" height="24px" viewBox="0 -960 960 960" fill="currentColor">
+              <path d="M647-440H160v-80h487L423-744l57-56 320 320-320 320-57-56 224-224Z"/>
+            </svg>
+          </div>
+        </div>
+      `
+      const next = viewportLayer.querySelector(".popupable-next-container")
+      const prev = viewportLayer.querySelector(".popupable-prev-container")
+      let navHideTimeout, navLastMoveX, navLastMoveY, navHovered
+      const hideNavOnInactivity = !(navigator.maxTouchPoints > 0 || window.matchMedia("(hover: none)").matches)
+
+      activePopup.scheduleNavHide = () => {
+        if (!hideNavOnInactivity) return
+        clearTimeout(navHideTimeout)
+        if (navHovered) return
+        navHideTimeout = setTimeout(() => {
+          if (navHovered) return
+          next.classList.add("popupable-button-inactive")
+          prev.classList.add("popupable-button-inactive")
+        }, 1500)
+      }
+
+      function showNav() {
+        next.classList.remove("popupable-button-inactive")
+        prev.classList.remove("popupable-button-inactive")
+        activePopup.scheduleNavHide()
+      }
+
+      activePopup.clearNavInactive = () => {
+        next.classList.remove("popupable-button-inactive")
+        prev.classList.remove("popupable-button-inactive")
+      }
+
+      recalculateVisible = async () => {
+        for (const clone of group) {
+          if (clone._zoomedClassTimer) {
+            clearTimeout(clone._zoomedClassTimer)
+            clone._zoomedClassTimer = undefined
+            clone.cloneContainer.classList.remove("popupable-zoomed")
+            clone.cloneContainer.style.transitionDuration = ""
+          }
+        }
+        const current = group[group.currentIndex]
+        if (popupState.original !== current.original) {
+          popupState.original.classList.remove("popupable-hide", "popupable-source-open")
+          popupState.original = current.original
+          current.original.classList.add(cloneObj.animation.hideSource ? "popupable-hide" : "popupable-source-open")
+        }
+        if (popupState.switchIndex !== group.currentIndex && !popupState.switchEventQueued) {
+          popupState.switchEventQueued = true
+          queueMicrotask(() => {
+            popupState.switchEventQueued = false
+            if (popupState.switchIndex === group.currentIndex) return
+            const previous = group[popupState.switchIndex]?.original
+            popupState.switchIndex = group.currentIndex
+            group[group.currentIndex].original.dispatchEvent(new CustomEvent("popupable:switch", { bubbles: true, composed: true, detail: { popup, previous, index: group.currentIndex } }))
+          })
+        }
+        current.markAsActiveInGroup()
+        prev.classList.toggle("popupable-button-disabled", !looping && !group.currentIndex)
+        next.classList.toggle("popupable-button-disabled", !looping && group.currentIndex === group.length - 1)
+        for (const [i, clone] of group.entries()) {
+          const index = i - group.currentIndex
+          clone.cloneContainer.style.setProperty("--popupable-offset-multiplier", index)
+          clone.cloneContainer.style.zIndex = Math.abs(index) * -1
+          if (clone.content) {
+            if (!index) {
+              clone.content.classList.remove("popupable-content-before")
+              clone.content.classList.remove("popupable-content-after")
+            } else if (index > 0) {
+              clone.content.classList.add("popupable-content-after")
+              clone.content.classList.remove("popupable-content-before")
+            } else {
+              clone.content.classList.add("popupable-content-before")
+              clone.content.classList.remove("popupable-content-after")
+            }
+          }
+        }
+        if (current.id) {
+          popup.id = current.id
+        } else {
+          popup.removeAttribute("id")
+        }
+        if (counter) {
+          counter.textContent = `${group.currentIndex + 1} / ${group.length}`
+        }
+        if (thumbnailItems) {
+          for (const [i, thumbnail] of thumbnailItems.entries()) {
+            thumbnail.classList.toggle("popupable-thumbnail-active", i === group.currentIndex)
+          }
+          const activeThumbnail = thumbnailItems[group.currentIndex]
+          requestAnimationFrame(() => {
+            if (!activeThumbnail || !thumbnailsContainer?.isConnected) return
+
+            const styles = getComputedStyle(thumbnailsContainer)
+            const paddingLeft = parseFloat(styles.paddingLeft) || 0
+            const paddingRight = parseFloat(styles.paddingRight) || 0
+            const visibleLeft = thumbnailsContainer.scrollLeft + paddingLeft
+            const visibleRight = thumbnailsContainer.scrollLeft + thumbnailsContainer.clientWidth - paddingRight
+            const thumbLeft = activeThumbnail.offsetLeft
+            const thumbRight = thumbLeft + activeThumbnail.offsetWidth
+
+            let nextScrollLeft = thumbnailsContainer.scrollLeft
+            if (!hasPositionedThumbnails) {
+              const maxScroll = thumbnailsContainer.scrollWidth - thumbnailsContainer.clientWidth
+              nextScrollLeft = Math.min(maxScroll, Math.max(0, thumbLeft + activeThumbnail.offsetWidth / 2 - thumbnailsContainer.clientWidth / 2))
+            } else if (thumbLeft < visibleLeft) {
+              nextScrollLeft = Math.max(0, thumbLeft - paddingLeft)
+            } else if (thumbRight > visibleRight) {
+              nextScrollLeft = thumbRight - thumbnailsContainer.clientWidth + paddingRight
+            }
+
+            if (nextScrollLeft !== thumbnailsContainer.scrollLeft) {
+              if (hasPositionedThumbnails) {
+                thumbnailsContainer.scrollTo({ left: nextScrollLeft, behavior: "smooth" })
+              } else {
+                thumbnailsContainer.scrollLeft = nextScrollLeft
+              }
+            }
+            hasPositionedThumbnails = true
+          })
+        }
+        activePopup.closeContainer.classList.toggle("popupable-button-inactive", !current.zoomable && !(current.video && (!current.explicitControls || current.source.controls)))
+        updateExpandedSize()
+        activePopup.lastProjectedIndex = activePopup.group.currentIndex
+        buildDecodeQueue(activePopup)
+        await current.ready
+        for (const [i, item] of group.entries()) {
+          if (!item.video || !item.source) continue
+          if (i === group.currentIndex) item.source.play().catch(() => {})
+          else if (!item.source.paused) item.source.pause()
+        }
+      }
+
+      function pauseAndSwitch(newIndex) {
+        const prev = group[group.currentIndex]
+        if (prev.video && prev.source) {
+          if (!prev.source.paused) {
+            prev.swipePaused = true
+            prev.source.pause()
+          }
+          if (!prev.explicitControls) prev.source.controls = false
+        }
+        group.currentIndex = newIndex
+        const current = group[group.currentIndex]
+        if (current.video && current.source) {
+          if (!current.zoomable && !current.explicitControls) current.source.controls = true
+          current.source.play().catch(() => {})
+          current.swipePaused = false
+        }
+        recalculateVisible()
+      }
+
+      goNext = () => {
+        if (group.currentIndex >= group.length - 1) {
+          if (looping) pauseAndSwitch(0)
+          return
+        }
+        pauseAndSwitch(group.currentIndex + 1)
+      }
+
+      goPrev = () => {
+        if (group.currentIndex <= 0) {
+          if (looping) pauseAndSwitch(group.length - 1)
+          return
+        }
+        pauseAndSwitch(group.currentIndex - 1)
+      }
+
+      activePopup.listeners.push(
+        {
+          target: next,
+          event: "click",
+          func: () => goNext()
+        },
+        {
+          target: prev,
+          event: "click",
+          func: () => goPrev()
+        },
+        {
+          target: document,
+          event: "keydown",
+          func: e => {
+            if (activePopup.state === "zoomed") return
+            switch (e.key) {
+              case "ArrowRight":
+              case "ArrowDown":
+              case "PageDown":
+              case "d":
+              case "s":
+                goNext()
+                break
+              case "ArrowLeft":
+              case "ArrowUp":
+              case "PageUp":
+              case "a":
+              case "w":
+                goPrev()
+                break
+              case "Home":
+                group.currentIndex = 0
+                recalculateVisible()
+                break
+              case "End":
+                group.currentIndex = group.length - 1
+                recalculateVisible()
+                break
+              case "0":
+              case "1":
+              case "2":
+              case "3":
+              case "4":
+              case "5":
+              case "6":
+              case "7":
+              case "8":
+              case "9":
+                group.currentIndex = Math.min(Math.max(Number(e.key), 1) - 1, group.length - 1)
+                recalculateVisible()
+                break
+            }
+          }
+        },
+        {
+          target: document,
+          event: "wheel",
+          func: e => {
+            if (activePopup.state === "zoomed") return
+            const now = performance.now()
+            if (now - (lastWheelNavAt || 0) < 80) return
+            if (e.deltaY > 50) {
+              lastWheelNavAt = now
+              goNext()
+            } else if (e.deltaY < -50) {
+              lastWheelNavAt = now
+              goPrev()
+            }
+          },
+          args: {
+            passive: true
+          }
+        }
+      )
+
+      if (thumbnailsContainer) {
+        let thumbnailsDragging, thumbnailsDragMoved, thumbnailsShowDraggingClass, thumbnailsStartX, thumbnailsStartScrollLeft, thumbnailsLastScrollLeft, thumbnailsLastAt, thumbnailsVelocity, thumbnailsMomentumRaf
+
+        function stopThumbnailsMomentum() {
+          if (thumbnailsMomentumRaf) {
+            cancelAnimationFrame(thumbnailsMomentumRaf)
+            thumbnailsMomentumRaf = null
+          }
+        }
+
+        function startThumbnailsMomentum() {
+          const startThreshold = 0.01
+          const stopThreshold = 0.002
+          const friction = 0.8
+          const edgeEpsilon = 0.1
+
+          stopThumbnailsMomentum()
+          if (Math.abs(thumbnailsVelocity) < startThreshold) return
+
+          let lastFrameAt = performance.now()
+          function step(now) {
+            if (!thumbnailsContainer.isConnected) {
+              stopThumbnailsMomentum()
+              return
+            }
+
+            const maxScroll = thumbnailsContainer.scrollWidth - thumbnailsContainer.clientWidth
+            if (maxScroll <= 0) {
+              stopThumbnailsMomentum()
+              return
+            }
+
+            const dt = Math.min(32, now - lastFrameAt)
+            lastFrameAt = now
+
+            let nextScrollLeft = thumbnailsContainer.scrollLeft + thumbnailsVelocity * dt
+            if (nextScrollLeft < 0) nextScrollLeft = 0
+            if (nextScrollLeft > maxScroll) nextScrollLeft = maxScroll
+            thumbnailsContainer.scrollLeft = nextScrollLeft
+
+            if (
+              (thumbnailsContainer.scrollLeft <= edgeEpsilon && thumbnailsVelocity < 0) ||
+              (thumbnailsContainer.scrollLeft >= maxScroll - edgeEpsilon && thumbnailsVelocity > 0)
+            ) {
+              stopThumbnailsMomentum()
+              return
+            }
+
+            thumbnailsVelocity *= Math.pow(friction, dt / 16.67)
+            if (Math.abs(thumbnailsVelocity) <= stopThreshold) {
+              stopThumbnailsMomentum()
+              return
+            }
+
+            thumbnailsMomentumRaf = requestAnimationFrame(step)
+          }
+
+          thumbnailsMomentumRaf = requestAnimationFrame(step)
+        }
+
+        activePopup.listeners.push(
+          {
+            target: thumbnailsContainer,
+            event: "pointerdown",
+            func: e => {
+              if (e.button !== 0) return
+              const maxScroll = thumbnailsContainer.scrollWidth - thumbnailsContainer.clientWidth
+              thumbnailsShowDraggingClass = maxScroll > 0
+              stopThumbnailsMomentum()
+              thumbnailsDragging = true
+              thumbnailsDragMoved = false
+              thumbnailsStartX = e.clientX
+              thumbnailsStartScrollLeft = thumbnailsContainer.scrollLeft
+              thumbnailsLastScrollLeft = thumbnailsContainer.scrollLeft
+              thumbnailsLastAt = performance.now()
+              thumbnailsVelocity = 0
+              if (thumbnailsShowDraggingClass) {
+                thumbnailsContainer.classList.add("popupable-thumbnails-dragging")
+              }
+              thumbnailsContainer.setPointerCapture(e.pointerId)
+            }
+          },
+          {
+            target: thumbnailsContainer,
+            event: "pointermove",
+            func: e => {
+              if (!thumbnailsDragging) return
+              const deltaX = (e.clientX - thumbnailsStartX) * (visualViewport?.scale || 1)
+              if (Math.abs(deltaX) > DRAG_THRESHOLD) {
+                thumbnailsDragMoved = true
+              }
+              const now = performance.now()
+              const dt = now - thumbnailsLastAt
+              const nextScrollLeft = thumbnailsStartScrollLeft - deltaX
+              thumbnailsContainer.scrollLeft = nextScrollLeft
+              if (dt > 0) {
+                const currentVelocity = (thumbnailsContainer.scrollLeft - thumbnailsLastScrollLeft) / dt
+                thumbnailsVelocity = thumbnailsVelocity * 0.65 + currentVelocity * 0.35
+                thumbnailsLastScrollLeft = thumbnailsContainer.scrollLeft
+                thumbnailsLastAt = now
+              }
+            }
+          },
+          {
+            target: thumbnailsContainer,
+            event: "pointerup",
+            func: e => {
+              if (!thumbnailsDragging) return
+              thumbnailsDragging = false
+              if (thumbnailsShowDraggingClass) {
+                thumbnailsContainer.classList.remove("popupable-thumbnails-dragging")
+              }
+              if (thumbnailsContainer.hasPointerCapture(e.pointerId)) {
+                thumbnailsContainer.releasePointerCapture(e.pointerId)
+              }
+              if (thumbnailsDragMoved) {
+                if (performance.now() - thumbnailsLastAt > 10) {
+                  thumbnailsVelocity = 0
+                }
+                startThumbnailsMomentum()
+                return
+              }
+
+              const thumbnail = document.elementFromPoint(e.clientX, e.clientY)?.closest?.(".popupable-thumbnail")
+              if (!thumbnail) return
+              group.currentIndex = Number(thumbnail.dataset.thumbnailIndex)
+              recalculateVisible()
+            }
+          },
+          {
+            target: thumbnailsContainer,
+            event: "pointercancel",
+            func: e => {
+              if (!thumbnailsDragging) return
+              thumbnailsDragging = false
+              if (thumbnailsShowDraggingClass) {
+                thumbnailsContainer.classList.remove("popupable-thumbnails-dragging")
+              }
+              if (thumbnailsContainer.hasPointerCapture(e.pointerId)) {
+                thumbnailsContainer.releasePointerCapture(e.pointerId)
+              }
+              stopThumbnailsMomentum()
+            }
+          },
+          {
+            target: thumbnailsContainer,
+            event: "wheel",
+            func: e => {
+              e.stopPropagation()
+              e.preventDefault()
+              const maxScroll = thumbnailsContainer.scrollWidth - thumbnailsContainer.clientWidth
+              if (maxScroll <= 0) return
+
+              const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY
+              const atStart = thumbnailsContainer.scrollLeft <= 0.1
+              const atEnd = thumbnailsContainer.scrollLeft >= maxScroll - 0.1
+              if ((atStart && delta < 0) || (atEnd && delta > 0)) return
+              if (atStart && delta > 0 && thumbnailsVelocity < 0) thumbnailsVelocity = 0
+              if (atEnd && delta < 0 && thumbnailsVelocity > 0) thumbnailsVelocity = 0
+
+              const impulse = delta * 0.015
+              thumbnailsVelocity = (thumbnailsVelocity || 0) + impulse
+              if (!thumbnailsMomentumRaf) {
+                startThumbnailsMomentum()
+              }
+            },
+            args: {
+              passive: false
+            }
+          }
+        )
+      }
+
+      if (hideNavOnInactivity) {
+        activePopup.listeners.push(
+          {
+            target: next,
+            event: "pointerenter",
+            func: () => {
+              navHovered = true
+              showNav()
+            }
+          },
+          {
+            target: prev,
+            event: "pointerenter",
+            func: () => {
+              navHovered = true
+              showNav()
+            }
+          },
+          {
+            target: next,
+            event: "pointerleave",
+            func: () => {
+              navHovered = false
+              activePopup.scheduleNavHide()
+            }
+          },
+          {
+            target: prev,
+            event: "pointerleave",
+            func: () => {
+              navHovered = false
+              activePopup.scheduleNavHide()
+            }
+          }
+        )
+
+        activePopup.listeners.push({
+          target: popup,
+          event: "pointermove",
+          func: e => {
+            if (activePopup.state === "zoomed") return
+            if (navLastMoveX == null || navLastMoveY == null) {
+              navLastMoveX = e.clientX
+              navLastMoveY = e.clientY
+              return
+            }
+            if (Math.abs(e.clientX - navLastMoveX) < DRAG_THRESHOLD && Math.abs(e.clientY - navLastMoveY) < DRAG_THRESHOLD) {
+              return
+            }
+            navLastMoveX = e.clientX
+            navLastMoveY = e.clientY
+            showNav()
+          },
+          args: {
+            passive: true
+          }
+        })
+      }
+
+      for (const clone of group) {
+        if (clone.content && contentContainer) {
+          contentContainer.append(clone.content)
+        }
+      }
+    } else {
+      if (content) {
+        contentContainer.append(content)
+      }
+    }
+
+    const enabledOrderItems = {
+      counter: !!counter,
+      content: !!contentContainer,
+      thumbnails: !!thumbnailsContainer
+    }
+
+    const topOrder = cloneObj.order.top.filter(token => enabledOrderItems[token])
+    const bottomOrder = cloneObj.order.bottom.filter(token => enabledOrderItems[token])
+
+    header = document.createElement("div")
+    header.className = "popupable-header"
+
+    footer = document.createElement("div")
+    footer.className = "popupable-footer"
+
+    function appendOrderedUiItem(container, token) {
+      if (!container) return
+      if (token === "counter" && counter) {
+        orderPlacement[container === header ? "counterTop" : "counterBottom"] = true
+        container.append(counter)
+      } else if (token === "content" && contentContainer) {
+        orderPlacement[container === header ? "contentTop" : "contentBottom"] = true
+        container.append(contentContainer)
+      } else if (token === "thumbnails" && thumbnailsContainer) {
+        orderPlacement[container === header ? "thumbnailsTop" : "thumbnailsBottom"] = true
+        container.append(thumbnailsContainer)
+      }
+    }
+
+    for (const token of topOrder) {
+      appendOrderedUiItem(header, token)
+    }
+
+    for (const token of bottomOrder) {
+      appendOrderedUiItem(footer, token)
+    }
+
+    viewportLayer.append(header)
+    viewportLayer.append(footer)
+
+    const closeContainer = document.createElement("div")
+    closeContainer.className = "popupable-button-container popupable-close-container"
+    closeContainer.innerHTML = `<div class="popupable-button popupable-close"><svg width="24px" height="24px" viewBox="0 -960 960 960" fill="currentColor"><path d="m256-200-56-56 224-224-224-224 56-56 224 224 224-224 56 56-224 224 224 224-56 56-224-224-224 224Z"/></svg></div>`
+    closeContainer.addEventListener("click", closePopupable)
+
+    if (!cloneObj.zoomable && !(cloneObj.video && (!cloneObj.explicitControls || cloneObj.source.controls))) {
+      closeContainer.classList.add("popupable-button-inactive")
+    }
+
+    header.append(closeContainer)
+
+    popup.append(cloneList, viewportLayer)
+
+    Object.assign(popupState, cloneObj, { popup, group, contentContainer, thumbnailsContainer, orderPlacement, closeContainer, goNext, goPrev, switchIndex: group?.currentIndex })
+
+    popup.popupableClose = immediate => {
+      if (activePopup !== popupState) return
+      // A grid reset must deliver close before detaching the source element.
+      if (immediate) popupState.transition.duration = 0
+      closePopupable()
+    }
+
+    // Append API for Gallery and Folders: retain slides and the current index.
+    // Neither page enables a thumbnail strip.
+    popup.popupableAppendImages = sources => {
+      if (!group || thumbnailItems || popupState.state === "close" || activePopup !== popupState) return
+      const seen = new Set(group.map(entry => entry.original))
+      for (const source of sources) {
+        if (seen.has(source)) continue
+        seen.add(source)
+        const entry = cloneElement(source, popupState.original)
+        group.push(entry)
+        cloneList.append(entry.cloneContainer)
+        if (entry.content && contentContainer) contentContainer.append(entry.content)
+      }
+      recalculateVisible()
+    }
+
+    ensureShadowStyles(original)
+    const loadingTimer = setTimeout(() => {
+      if (loadToken === popupLoadToken) original.classList.add("popupable-loading")
+    }, 250)
+    await popupState.triggerDecode()
+    clearTimeout(loadingTimer)
+    original.classList.remove("popupable-loading")
+    if (loadToken !== popupLoadToken || activePopup !== popupState || popupState.state === "close") {
+      return
+    }
+
+    cloneContainer.classList.add("popupable-block-transitions")
+    if (cloneObj.animation.hideSource) original.classList.add("popupable-hide")
+    else original.classList.add("popupable-source-open")
+    if (cloneObj.animation.crossfade) popup.classList.add("popupable-crossfade")
+    if (cloneObj.animation.fade) popup.classList.add("popupable-fade")
+    document.body.append(popup)
+    setCloneToOriginalRect(cloneContainer, original)
+    if (cloneObj.video) {
+      cloneObj.source.play().catch(() => {})
+    }
+    disableScroll()
+
+    const styles = getComputedStyle(popup)
+    popupState.transition.duration = parseFloat(styles.transitionDuration) * 1000 + parseFloat(styles.transitionDelay) * 1000
+
+    popup._state = popupState
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        cloneContainer.classList.remove("popupable-block-transitions")
+        openPopupable(popup._state)
+        if (group) {
+          recalculateVisible()
+          buildDecodeQueue(popup._state)
+        }
+      })
+    })
+
+    let lastUpAt = 0
+    let lastUpWasNav
+
+    if (group) {
+      popup.addEventListener("dragstart", e => e.preventDefault())
+    }
+
+    const openTouchPointers = new Map()
+
+    function enterZoom(state, current, event, initialScale, initialPointers = []) {
+      if (state.state !== "open") return
+
+      let swipeOffsetX = 0
+      const swipeLayer = current.cloneContainer.parentElement
+      const swipeTransform = swipeLayer.style.transform
+      if (swipeTransform) {
+        const match = swipeTransform.match(/translateX\((-?\d+(?:\.\d+)?)px\)/)
+        if (match) {
+          swipeOffsetX = Number(match[1]) || 0
+        }
+      }
+      const hasSwipeOffset = Math.abs(swipeOffsetX) > 0.5
+
+      dragging = false
+      if (hasSwipeOffset) {
+        current.cloneContainer.style.translate = "0 0"
+        current.cloneContainer.style.transition = "translate var(--popupable-switch-duration), transform 0s"
+        swipeLayer.style.transition = null
+        swipeLayer.style.transform = null
+        current.cloneContainer.style.translate = `${swipeOffsetX}px 0`
+      } else {
+        swipeLayer.style.transition = null
+        swipeLayer.style.transform = null
+      }
+      state.state = "zoomed"
+      popup.classList.add("popupable-locked")
+
+      let x, y, scale = initialScale
+      const minScale = 0.5
+      const maxScale = 6
+      const pointers = new Map()
+      let panPointerId, panLastX, panLastY, pinchLastCenterX, pinchLastCenterY, pinchLastDistance
+      let tapTarget, tapStartX, tapStartY, tapMoved
+      let usedPinchZoom = false
+
+      const startStyles = getComputedStyle(current.cloneContainer)
+      const startTransform = startStyles.transform
+      const startMatrix = startTransform && startTransform !== "none" ? new DOMMatrixReadOnly(startTransform) : null
+      const startScale = startMatrix ? startMatrix.a : 1
+      const rawRect = current.cloneContainer.getBoundingClientRect()
+      const rect = startMatrix ? {
+        left: rawRect.left - startMatrix.e,
+        top: rawRect.top - startMatrix.f,
+        width: rawRect.width / startMatrix.a,
+        height: rawRect.height / startMatrix.a
+      } : rawRect
+      const startX = event?.clientX ?? rect.left + rect.width / 2
+      const startY = event?.clientY ?? rect.top + rect.height / 2
+      x = (startX - rect.left) * (1 - scale)
+      y = (startY - rect.top) * (1 - scale)
+
+      const zoomScaleSpan = Math.max(1, Math.abs(initialScale - 1))
+      const proportionalZoomDuration = (from, to) => {
+        const duration = parseCssTime(getComputedStyle(current.cloneContainer).getPropertyValue("--popupable-zoom-duration"))
+        return duration * Math.min(1, Math.abs(to - from) / zoomScaleSpan)
+      }
+      const freezeTransform = () => {
+        const computed = getComputedStyle(current.cloneContainer).transform
+        if (computed && computed !== "none") current.cloneContainer.style.transform = computed
+        current.cloneContainer.style.transition = "none"
+        void current.cloneContainer.offsetWidth
+        current.cloneContainer.style.transition = null
+      }
+
+      const render = () => current.cloneContainer.style.transform = `translate(${x}px, ${y}px) scale(${scale})`
+
+      const clamp = value => Math.min(maxScale, Math.max(minScale, value))
+
+      let directControl = false
+      const takeDirectControl = () => {
+        if (directControl) return
+        directControl = true
+        const computed = getComputedStyle(current.cloneContainer).transform
+        if (computed && computed !== "none") {
+          const m = new DOMMatrixReadOnly(computed)
+          x = m.e
+          y = m.f
+          scale = clamp(m.a)
+          render()
+        }
+        current.cloneContainer.style.transition = "none"
+      }
+
+      function zoomAt(targetScale, centerX, centerY) {
+        const prevScale = scale
+        scale = clamp(targetScale)
+        if (scale === prevScale) return false
+        const rect = current.cloneContainer.getBoundingClientRect()
+        const ratio = scale / prevScale
+        const px = centerX - rect.left
+        const py = centerY - rect.top
+        x = x + px * (1 - ratio)
+        y = y + py * (1 - ratio)
+        return true
+      }
+
+      function syncGestureState() {
+        if (pointers.size === 1) {
+          const pointer = pointers.values().next().value
+          panPointerId = pointer.id
+          panLastX = pointer.x
+          panLastY = pointer.y
+          pinchLastCenterX = null
+          pinchLastCenterY = null
+          pinchLastDistance = null
+          return
+        }
+
+        if (pointers.size >= 2) {
+          panPointerId = null
+          const [p1, p2] = [...pointers.values()]
+          pinchLastCenterX = (p1.x + p2.x) / 2
+          pinchLastCenterY = (p1.y + p2.y) / 2
+          pinchLastDistance = Math.hypot(p2.x - p1.x, p2.y - p1.y)
+          return
+        }
+
+        panPointerId = null
+        panLastX = null
+        panLastY = null
+        pinchLastCenterX = null
+        pinchLastCenterY = null
+        pinchLastDistance = null
+      }
+
+      clearTimeout(current._zoomedClassTimer)
+      current.cloneContainer.classList.add("popupable-zoomed")
+      if (!initialPointers.length) {
+        freezeTransform()
+        current.cloneContainer.style.transitionDuration = proportionalZoomDuration(startScale, scale) + "ms"
+      }
+      render()
+
+      if (initialPointers.length) {
+        if (!hasSwipeOffset) {
+          directControl = true
+          current.cloneContainer.style.transition = "none"
+        }
+        tapMoved = true
+        for (const pointer of initialPointers) {
+          pointers.set(pointer.id, {
+            id: pointer.id,
+            x: pointer.x,
+            y: pointer.y
+          })
+          popup.setPointerCapture(pointer.id)
+        }
+        syncGestureState()
+      }
+
+      state.unzoom = () => {
+        state.state = "open"
+        popup.classList.remove("popupable-locked")
+
+        for (const pointerId of pointers.keys()) {
+          if (popup.hasPointerCapture(pointerId)) {
+            popup.releasePointerCapture(pointerId)
+          }
+        }
+
+        pointers.clear()
+        const computed = getComputedStyle(current.cloneContainer).transform
+        const currentScale = computed && computed !== "none" ? new DOMMatrixReadOnly(computed).a : 1
+        const returnDuration = proportionalZoomDuration(currentScale, 1)
+        freezeTransform()
+        current.cloneContainer.style.transitionDuration = returnDuration + "ms"
+        current.cloneContainer.style.transform = null
+        current.cloneContainer.style.translate = null
+        clearTimeout(current._zoomedClassTimer)
+        current._zoomedClassTimer = setTimeout(() => {
+          current.cloneContainer.classList.remove("popupable-zoomed")
+          current.cloneContainer.style.transitionDuration = ""
+        }, returnDuration)
+
+        for (const listener of state.zoomListeners) {
+          listener.target.removeEventListener(listener.event, listener.func)
+        }
+      }
+
+      state.zoomListeners = [
+        {
+          target: popup,
+          event: "pointerdown",
+          func: e => {
+            if (e.button !== 0) return
+            popup.setPointerCapture(e.pointerId)
+            pointers.set(e.pointerId, {
+              id: e.pointerId,
+              x: e.clientX,
+              y: e.clientY
+            })
+
+            if (pointers.size === 1) {
+              tapTarget = e.target
+              tapStartX = e.clientX
+              tapStartY = e.clientY
+              tapMoved = false
+            } else {
+              tapMoved = true
+            }
+
+            syncGestureState()
+            e.preventDefault()
+          }
+        },
+        {
+          target: popup,
+          event: "pointermove",
+          func: e => {
+            const pointer = pointers.get(e.pointerId)
+            if (!pointer) return
+
+            pointer.x = e.clientX
+            pointer.y = e.clientY
+
+            if (!tapMoved && (Math.abs(e.clientX - tapStartX) > DRAG_THRESHOLD || Math.abs(e.clientY - tapStartY) > DRAG_THRESHOLD)) {
+              tapMoved = true
+            }
+
+            if (pointers.size === 1 && panPointerId === e.pointerId) {
+              const dx = e.clientX - panLastX
+              const dy = e.clientY - panLastY
+              if (!dx && !dy) return
+              takeDirectControl()
+              x += dx
+              y += dy
+              panLastX = e.clientX
+              panLastY = e.clientY
+              render()
+              return
+            }
+
+            if (pointers.size >= 2) {
+              takeDirectControl()
+              const [p1, p2] = [...pointers.values()]
+              const centerX = (p1.x + p2.x) / 2
+              const centerY = (p1.y + p2.y) / 2
+              const distance = Math.hypot(p2.x - p1.x, p2.y - p1.y)
+
+              if (!pinchLastDistance) {
+                pinchLastCenterX = centerX
+                pinchLastCenterY = centerY
+                pinchLastDistance = distance
+                return
+              }
+
+              x += centerX - pinchLastCenterX
+              y += centerY - pinchLastCenterY
+              zoomAt(scale * (distance / pinchLastDistance), centerX, centerY)
+              usedPinchZoom = true
+
+              pinchLastCenterX = centerX
+              pinchLastCenterY = centerY
+              pinchLastDistance = distance
+              render()
+            }
+          }
+        },
+        {
+          target: popup,
+          event: "pointerup",
+          func: e => {
+            if (!pointers.has(e.pointerId)) return
+
+            pointers.delete(e.pointerId)
+            if (popup.hasPointerCapture(e.pointerId)) {
+              popup.releasePointerCapture(e.pointerId)
+            }
+
+            if (usedPinchZoom && scale <= 1.01 && pointers.size < 2) {
+              state.skipOpenTouchPointerUps = pointers.size
+              state.unzoom()
+              return
+            }
+
+            if (!pointers.size && !tapMoved && Math.abs(e.clientX - tapStartX) < DRAG_THRESHOLD && Math.abs(e.clientY - tapStartY) < DRAG_THRESHOLD) {
+              const clickedClone = tapTarget?.closest?.(".popupable-clone-container") === current.cloneContainer
+              const clickedBackground = tapTarget === popup || tapTarget === viewportLayer
+              if (clickedClone || clickedBackground) {
+                state.unzoom()
+                return
+              }
+            }
+
+            syncGestureState()
+          }
+        },
+        {
+          target: popup,
+          event: "pointercancel",
+          func: e => {
+            if (!pointers.has(e.pointerId)) return
+            pointers.delete(e.pointerId)
+            if (popup.hasPointerCapture(e.pointerId)) {
+              popup.releasePointerCapture(e.pointerId)
+            }
+            syncGestureState()
+          }
+        },
+        {
+          target: popup,
+          event: "wheel",
+          func: e => {
+            takeDirectControl()
+            if (zoomAt(scale * Math.exp(-e.deltaY * 0.002), e.clientX, e.clientY)) {
+              render()
+            }
+          },
+          args: {
+            passive: true
+          }
+        }
+      ]
+
+      for (const listener of state.zoomListeners) {
+        listener.target.addEventListener(listener.event, listener.func, listener.args)
+      }
+    }
+
+    activePopup.listeners.push(
+      {
+        target: popup,
+        event: "pointerdown",
+        func: e => {
+          if (popup._state.state !== "open" || e.pointerType !== "touch") return
+          const state = popup._state
+          const current = state.group ? state.group[state.group.currentIndex] : state
+          if (e.target.closest(".popupable-clone-container") !== current.cloneContainer) return
+
+          openTouchPointers.set(e.pointerId, {
+            id: e.pointerId,
+            x: e.clientX,
+            y: e.clientY
+          })
+
+          if (openTouchPointers.size >= 2) {
+            enterZoom(state, current, e, 1, [...openTouchPointers.values()].slice(0, 2))
+            openTouchPointers.clear()
+            e.preventDefault()
+          }
+        }
+      },
+      {
+        target: popup,
+        event: "pointermove",
+        func: e => {
+          const pointer = openTouchPointers.get(e.pointerId)
+          if (!pointer) return
+          pointer.x = e.clientX
+          pointer.y = e.clientY
+        }
+      },
+      {
+        target: popup,
+        event: "pointerup",
+        func: e => {
+          openTouchPointers.delete(e.pointerId)
+        }
+      },
+      {
+        target: popup,
+        event: "pointercancel",
+        func: e => {
+          openTouchPointers.delete(e.pointerId)
+        }
+      }
+    )
+
+    popup.addEventListener("pointerup", e => {
+      if (popup._state.state === "zoomed") return
+      if (e.pointerType === "touch" && (popup._state.skipOpenTouchPointerUps || 0) > 0) {
+        popup._state.skipOpenTouchPointerUps--
+        return
+      }
+
+      const now = performance.now()
+      const isNav = e.target.closest(".popupable-next-container, .popupable-prev-container") != null
+
+      if (lastUpWasNav && now - lastUpAt < 250) {
+        lastUpAt = now
+        return
+      }
+
+      if (isNav) {
+        lastUpWasNav = true
+        lastUpAt = now
+      } else {
+        lastUpWasNav = false
+        lastUpAt = now
+      }
+
+      if (
+        e.button !== 0 ||
+        !(
+          ((e.target.classList.contains("popupable-clone") || e.target.classList.contains("popupable-clone-layer")) &&
+            mouseDownTarget.classList.contains("popupable-clone-container")) ||
+          (e.target == mouseDownTarget &&
+            (e.target.closest(".popupable-clone-container") ||
+              e.target.classList.contains("popupable-viewport") ||
+              e.target.classList.contains("popupable-container"))) ||
+          (e.target.classList.contains("popupable-container") &&
+            mouseDownTarget === activePopup.original.parentElement)
+        )
+      ) return
+
+      const state = popup._state
+      const current = state.group ? state.group[state.group.currentIndex] : state
+
+      if (state.blocked) {
+        state.blocked = false
+      }
+
+      if (state.state === "open") {
+        requestAnimationFrame(() => {
+          if (state.blocked) {
+            state.blocked = false
+            return
+          }
+
+          if (current.zoomable && (e.target.classList.contains("popupable-clone") || e.target.classList.contains("popupable-clone-layer"))) {
+            enterZoom(state, current, e, 2)
+            return
+          }
+          if (current.video && current.source.controls && (e.target.classList.contains("popupable-clone") || e.target.closest(".popupable-clone-container") === current.cloneContainer)) {
+            return
+          }
+          closePopupable()
+        })
+        return
+      }
+
+      e.stopPropagation()
+
+      if (activePopup !== state) {
+        closePopupable()
+        activePopup = state
+      }
+
+      openPopupable(activePopup)
+    })
+  }
+
+  document.addEventListener("pointerup", handlePointerUp)
+  window.popupableOpen = original => {
+    if (!original?.isConnected) return
+    mouseDownTarget = original
+    downX = downY = 0
+    dragging = false
+    return handlePointerUp({
+      button: 0, target: original, clientX: 0, clientY: 0,
+      composedPath: () => [original], preventDefault() {}
+    })
+  }
+
+  document.addEventListener("keydown", e => {
+    if (activePopup && (e.key === "Escape" || e.key === "Backspace" || e.key === " " || e.key === "Delete")) {
+      if (activePopup.state === "zoomed") {
+        activePopup.unzoom()
+        return
+      }
+      closePopupable()
+    }
+  })
+
+  window.addEventListener("resize", updateExpandedSize)
+  if (visualViewport) {
+    visualViewport.addEventListener("resize", updateExpandedSize)
+    visualViewport.addEventListener("scroll", updateExpandedSize)
+  }
+}

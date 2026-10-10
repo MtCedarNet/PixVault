@@ -32,6 +32,7 @@ function getElement(id) {
 }
 
 const window = { location: new URL('http://localhost/folders') };
+window.requestAnimationFrame = callback => callback();
 window.addEventListener = (name, handler) => windowHandlers.set(name, handler);
 const cookies = new Map([['pixvault-folder-mode', 'tree'], ['pixvault-folder-sort', 'newest']]);
 const cookieWrites = [];
@@ -126,7 +127,7 @@ assert.equal(getElement('folderModal').classList.contains('open'), false);
 assert.equal(run('currentPath'), 'Trips');
 history.forward();
 assert.equal(getElement('folderModal').classList.contains('open'), true);
-context.popup = { dispatchEvent(event) {
+context.popup = { focus() {}, dispatchEvent(event) {
   assert.equal(event.key, 'Escape');
   documentHandlers.get('popupable:close')();
 } };

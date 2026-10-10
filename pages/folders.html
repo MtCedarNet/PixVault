@@ -9,6 +9,7 @@
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/popupable@1.11.0/dist/popupable.min.css" rel="stylesheet">
+<link href="/assets/vendor/popupable/popupable.css" rel="stylesheet">
 <style>
 
   :root {
@@ -283,6 +284,8 @@
     background: var(--border);
   }
   .modal-img:hover { transform: scale(1.04); filter: brightness(.8); }
+  .modal-item { min-width: 0; border-radius: 8px; }
+  .modal-item.lightbox-selected { outline: 2px solid var(--accent); outline-offset: 2px; }
 
   .fade-in { animation: fadeIn .3s ease forwards; }
   @keyframes fadeIn { from { opacity:0; transform: scale(.97); } to { opacity:1; transform: none; } }
@@ -363,7 +366,7 @@
     <option value="oldest">Oldest first</option>
   </select>
   </div>
-  <div id="modalGrid" data-popupable-group="folder-images" data-popupable-looping data-popupable-counter>
+  <div id="modalGrid" data-popupable-group="folder-images" data-popupable-counter>
     <div id="modalSentinel" style="height:40px;display:flex;align-items:center;justify-content:center;grid-column:1/-1">
       <div class="spinner-border spinner-border-sm text-secondary"></div>
     </div>
@@ -372,6 +375,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script type="module" src="https://cdn.jsdelivr.net/npm/popupable@1.11.0/dist/popupable.min.js"></script>
+<script type="module" src="/assets/vendor/popupable/popupable.js"></script>
 <script>
 let allFolders = [];
 let hotFolders = [];
@@ -419,19 +423,12 @@ let modalSort = imageSortFromFolderSort(document.getElementById('folderSortSelec
 document.getElementById('modalSortSelect').value = modalSort;
 let modalAbortController = null;
 document.getElementById('modalSortSelect').addEventListener('change', function() {
-  if (modalAbortController) modalAbortController.abort();
-  modalLoading = false;
+  resetModalImages();
   modalSort = this.value;
   const folderSort = modalSort || 'default';
   document.getElementById('folderSortSelect').value = folderSort;
   localStorage.setItem('pixvault-folder-sort', folderSort);
   applyFolderSort();
-  modalPage = 1;
-  modalHasMore = true;
-  modalItems = [];
-  document.getElementById('modalGrid').innerHTML = '<div id="modalSentinel" style="height:40px;display:flex;align-items:center;justify-content:center;grid-column:1/-1"><div class="spinner-border spinner-border-sm text-secondary"></div></div>';
-  modalObserver.disconnect();
-  //setTimeout(() => modalObserver.observe(document.getElementById('modalSentinel')), 100);
   loadModalPage();
 });
 function sortFolders(folders, mode) {
@@ -654,28 +651,72 @@ let modalHasMore = true;
 let modalLoading = false;
 let modalFolder = '';
 let modalItems = [];
+let modalSources = [];
+let modalVersion = 0;
 let activePopupSource = null;
 let activePopupElement = null;
 let popupClosingFromHistory = false;
+let popupRestoringFromHistory = false;
+let lastPopupSource = null;
+let popupScrollSourceToRestore = null;
+const LIGHTBOX_PREFETCH_REMAINING = 8;
 
-function dismissPopup() {
+function dismissPopup(immediate = false) {
+  if (activePopupElement?.popupableClose) {
+    activePopupElement.popupableClose(immediate);
+    return;
+  }
   (activePopupElement || document).dispatchEvent(new KeyboardEvent('keydown', {
     key: 'Escape', code: 'Escape', bubbles: true, cancelable: true,
   }));
 }
 
-async function openFolder(name, displayName, recordHistory = true) {
-  // log folder visit
-  if (recordHistory) fetch('/api/hot/folder?name=' + encodeURIComponent(name), { method: 'POST' });
-  modalFolder = name;
+function resetModalImages() {
+  if (activePopupSource) dismissPopup(true);
+  modalVersion++;
+  if (modalAbortController) modalAbortController.abort();
+  modalObserver.disconnect();
+  modalLoading = false;
   modalPage = 1;
   modalHasMore = true;
   modalItems = [];
-  modalSort = imageSortFromFolderSort(document.getElementById('folderSortSelect').value);
-  document.getElementById('modalSortSelect').value = modalSort;
+  modalSources = [];
   const grid = document.getElementById('modalGrid');
   grid.innerHTML = '<div id="modalSentinel" style="height:40px;display:flex;align-items:center;justify-content:center;grid-column:1/-1"><div class="spinner-border spinner-border-sm text-secondary"></div></div>';
-  modalObserver.disconnect();
+  grid.scrollTop = 0;
+}
+
+function scrollToPopupSource(source) {
+  const card = source.closest('.modal-item');
+  if (!card) return;
+  const grid = document.getElementById('modalGrid');
+  const rect = card.getBoundingClientRect();
+  grid.scrollTo({
+    top: grid.scrollTop + rect.top - grid.getBoundingClientRect().top - (grid.clientHeight - rect.height) / 2,
+    behavior: 'instant',
+  });
+}
+
+function followPopupSource(source) {
+  lastPopupSource?.closest('.modal-item')?.classList.remove('lightbox-selected');
+  activePopupSource = lastPopupSource = source;
+  const card = source.closest('.modal-item');
+  card?.classList.add('lightbox-selected');
+  card?.focus({ preventScroll: true });
+  scrollToPopupSource(source);
+  const idx = Number(source.dataset.idx);
+  const item = modalItems[idx];
+  if (item) fetch('/api/hot/image?url=' + encodeURIComponent(item.url), { method: 'POST' });
+  if (modalItems.length - idx - 1 <= LIGHTBOX_PREFETCH_REMAINING) loadModalPage();
+}
+
+async function openFolder(name, displayName, recordHistory = true) {
+  resetModalImages();
+  // log folder visit
+  if (recordHistory) fetch('/api/hot/folder?name=' + encodeURIComponent(name), { method: 'POST' });
+  modalFolder = name;
+  modalSort = imageSortFromFolderSort(document.getElementById('folderSortSelect').value);
+  document.getElementById('modalSortSelect').value = modalSort;
   document.getElementById('modalTitle').textContent = displayName || name;
   document.getElementById('modalCount').textContent = '';
   document.getElementById('folderModal').classList.add('open');
@@ -689,6 +730,7 @@ async function openFolder(name, displayName, recordHistory = true) {
 async function loadModalPage() {
   if (modalLoading || !modalHasMore) return;
   modalLoading = true;
+  const requestVersion = modalVersion;
   document.getElementById('modalSentinel').style.display = 'flex';
   modalAbortController = new AbortController();
   try {
@@ -696,6 +738,7 @@ async function loadModalPage() {
     const res = await fetch(`/api/folder/${path}?page=${modalPage}&per_page=20&sort=${modalSort||''}`, { signal: modalAbortController.signal });
     if (!res.ok) throw new Error('Could not load folder images');
     const data = await res.json();
+    if (requestVersion !== modalVersion) return;
     modalHasMore = data.has_more;
     modalPage++;
     document.getElementById('modalCount').textContent = `${data.total.toLocaleString()} photos`;
@@ -711,39 +754,60 @@ async function loadModalPage() {
       img.dataset.popupableThumb = item.thumb_url || item.url;
       img.dataset.popupableDescription = item.display_name || item.folder;
       img.dataset.popupableGroup = 'folder-images';
+      img.dataset.popupableIndex = modalItems.length - 1;
+      img.tabIndex = 0;
+      img.addEventListener('keydown', event => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          window.popupableOpen(img);
+        }
+      });
       img.alt = item.folder;
       img.loading = 'lazy';
       img.dataset.idx = modalItems.length - 1;
-      document.getElementById('modalGrid').insertBefore(img, sentinel);
+      const card = document.createElement('div');
+      card.className = 'modal-item';
+      card.dataset.idx = img.dataset.idx;
+      card.tabIndex = -1;
+      card.appendChild(img);
+      document.getElementById('modalGrid').insertBefore(card, sentinel);
+      modalSources.push(img);
     });
+    activePopupElement?.popupableAppendImages(modalSources);
 
     if (!modalHasMore) {
       if (sentinel) sentinel.style.display = 'none';
     } else if (sentinel) {
       document.getElementById('modalGrid').appendChild(sentinel);
       modalObserver.disconnect();
-      setTimeout(() => modalObserver.observe(sentinel), 300);
+      setTimeout(() => {
+        if (requestVersion === modalVersion && sentinel.isConnected) modalObserver.observe(sentinel);
+      }, 300);
     }
   } catch(e) {
-    if (e.name !== 'AbortError') console.error(e);
-  } finally { modalLoading = false; }
+    if (requestVersion === modalVersion && e.name !== 'AbortError') console.error(e);
+  } finally { if (requestVersion === modalVersion) modalLoading = false; }
 }
 
 const modalObserver = new IntersectionObserver(entries => {
-  if (entries[0].isIntersecting && !modalLoading && modalHasMore) loadModalPage();
+  if (entries[0].isIntersecting && !activePopupSource && !modalLoading && modalHasMore) loadModalPage();
 }, { root: document.getElementById('modalGrid'), rootMargin: '300px' });
 
 document.getElementById('modalGrid').addEventListener('scroll', () => {
   const grid = document.getElementById('modalGrid');
-  if (!modalLoading && modalHasMore && grid.scrollTop + grid.clientHeight >= grid.scrollHeight - 800) {
+  if (!activePopupSource && !modalLoading && modalHasMore && grid.scrollTop + grid.clientHeight >= grid.scrollHeight - 800) {
     loadModalPage();
   }
 }, { passive: true });
 function hideModal() {
+  if (activePopupSource) dismissPopup(true);
+  modalVersion++;
   if (modalAbortController) modalAbortController.abort();
   modalObserver.disconnect();
   modalLoading = false;
   modalHasMore = false;
+  modalItems = [];
+  modalSources = [];
   document.getElementById('folderModal').classList.remove('open');
   document.getElementById('modalGrid').innerHTML = '';
   document.body.style.overflow = '';
@@ -755,9 +819,12 @@ function closeModal() {
 }
 
 window.addEventListener('popstate', event => {
+  let scrollSource = popupScrollSourceToRestore;
+  popupScrollSourceToRestore = null;
   const state = event.state?.pixvaultFolder ? event.state : null;
   let overlay = state?.overlay || '';
   if (activePopupSource && overlay !== 'popup') {
+    scrollSource = activePopupSource;
     popupClosingFromHistory = true;
     dismissPopup();
   }
@@ -770,11 +837,22 @@ window.addEventListener('popstate', event => {
   localStorage.setItem('pixvault-folder-mode', viewMode);
   refreshFolders();
   if (overlay === 'popup' && !activePopupSource) {
-    overlay = 'modal';
-    history.replaceState({ ...state, overlay }, '', folderUrl(currentPath));
+    if (lastPopupSource?.isConnected && modalFolder === state.modalFolder && document.getElementById('folderModal').classList.contains('open')) {
+      popupRestoringFromHistory = true;
+      window.popupableOpen(lastPopupSource);
+    } else {
+      overlay = 'modal';
+      history.replaceState({ ...state, overlay }, '', folderUrl(currentPath));
+    }
   }
   if ((overlay === 'modal' || overlay === 'popup') && !document.getElementById('folderModal').classList.contains('open') && state?.modalFolder) {
     openFolder(state.modalFolder, state.modalDisplayName, false);
+  }
+  if (scrollSource) {
+    window.requestAnimationFrame(() => {
+      if (!scrollSource.isConnected || (activePopupSource && activePopupSource !== scrollSource)) return;
+      scrollToPopupSource(scrollSource);
+    });
   }
 });
 
@@ -784,20 +862,27 @@ document.getElementById('folderModal').addEventListener('click', e => {
 
 document.addEventListener('popupable:open', e => {
   const wasOpen = Boolean(activePopupSource);
-  activePopupSource = e.target;
   activePopupElement = e.detail.popup;
-  if (!wasOpen) {
+  if (!wasOpen && !popupRestoringFromHistory) {
     history.pushState(folderHistoryState({ overlay: 'popup', modalFolder, modalDisplayName: document.getElementById('modalTitle').textContent }), '', folderUrl(currentPath));
   }
-  const idx = Number(e.target.dataset.idx);
-  const item = modalItems[idx];
-  if (item) fetch('/api/hot/image?url=' + encodeURIComponent(item.url), { method: 'POST' });
+  popupRestoringFromHistory = false;
+  followPopupSource(e.target);
+});
+document.addEventListener('popupable:switch', e => {
+  if (e.detail.popup !== activePopupElement) return;
+  followPopupSource(e.target);
 });
 document.addEventListener('popupable:close', () => {
+  const source = activePopupSource;
+  source?.focus({ preventScroll: true });
   activePopupSource = null;
   activePopupElement = null;
   if (popupClosingFromHistory) { popupClosingFromHistory = false; return; }
-  if (history.state?.pixvaultFolder && history.state.overlay === 'popup') history.back();
+  if (history.state?.pixvaultFolder && history.state.overlay === 'popup') {
+    popupScrollSourceToRestore = source;
+    history.back();
+  }
 });
 
 document.addEventListener('keydown', e => {

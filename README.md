@@ -49,6 +49,7 @@ PixVault denies gallery access until `auth.gallery_password` is set. The login p
 - **Infinite scroll** — lazy loads 40 images at a time as you scroll
 - **Shuffle toggle** — randomize order
 - **Lightbox** — powered by [popupable](https://github.com/ewanhowell5195/popupable), with keyboard and swipe navigation; browser Back closes it
+- **Gallery navigation** — enlarged images follow the order images were packed into the gallery. The selected thumbnail stays highlighted and scrolls into view; within eight images of the loaded end, the next 40 images load and join the open lightbox. Navigation stops at the first and last available image.
 - **Responsive** — 1–6 columns depending on screen width
 
 ### Folders (Page 2)
@@ -59,6 +60,7 @@ PixVault denies gallery access until `auth.gallery_password` is set. The login p
 - **Click folder** → opens scrollable image grid inside a modal
 - **Infinite scroll inside modal**
 - **Lightbox** inside folder view, powered by [popupable](https://github.com/ewanhowell5195/popupable); browser Back closes it
+- **Image navigation** follows the folder's current sort order, highlights and scrolls to the selected thumbnail, and loads the next 20 images within eight images of the loaded end. Closing the lightbox keeps the last viewed image in view; browser Forward can reopen it while the folder remains open.
 
 ### Admin (Page 3)
 
